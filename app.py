@@ -32,18 +32,19 @@ else:
     api_key = os.getenv("GEMINI_API_KEY")
 
 client = None
-if api_key and api_key.startswith("AIzaSy"):
+if api_key:
     try:
-        client = genai.Client(api_key=api_key)
+        clean_key = str(api_key).strip().strip("'\"")
+        client = genai.Client(api_key=clean_key)
     except Exception as e:
         st.error(f"Error initializing Gemini client: {e}")
 else:
-    st.error("Invalid or missing Gemini API key. Your key must start with 'AIzaSy'. Please update it in Streamlit Settings ➔ Secrets.")
+    st.error("Missing Gemini API key. Please add GEMINI_API_KEY in Streamlit Settings ➔ Secrets.")
 
-MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+# Models that work with your key
+MODELS = ["gemini-3.8-flash", "gemini-3.6-flash"]
 
 # ----------------- ISOLATED USER SESSION STATE -----------------
-# Storage exists purely in the visitor's browser memory (zero shared file persistence)
 if "sessions" not in st.session_state:
     st.session_state.sessions = {
         "New Conversation": [
@@ -96,7 +97,7 @@ THEMES = {
 
 theme_conf = THEMES[st.session_state.active_theme]
 
-# CSS styling for custom clean interface and stealth mode
+# CSS styling
 st.markdown(f"""
 <style>
     .stApp {{
@@ -109,7 +110,6 @@ st.markdown(f"""
         display: block !important;
     }}
 
-    /* Keep the left sidebar toggle arrow visible and clickable */
     [data-testid="collapsedControl"],
     [data-testid="collapsedControl"] button,
     button[data-testid="baseButton-headerNoPadding"] {{
@@ -119,7 +119,6 @@ st.markdown(f"""
         z-index: 999999 !important;
     }}
 
-    /* Selectively hide GitHub buttons, Fork icons, and 3-dots menus */
     [data-testid="stToolbarActions"],
     header a[href*="github.com"],
     header .stDeployButton,
@@ -130,7 +129,6 @@ st.markdown(f"""
         visibility: hidden !important;
     }}
 
-    /* Hide footer and viewer badges */
     footer,
     div[class*="viewerBadge"],
     div[data-testid="stStatusWidget"],
@@ -409,7 +407,7 @@ if prompt := st.chat_input(placeholder):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # 1. Image Mode: Fast turbo generation with margin-crop for zero watermark
+    # 1. Image Mode
     if app_mode == "🎨 Image Generator":
         with st.chat_message("assistant"):
             with st.spinner("Generating artwork..."):
@@ -425,7 +423,6 @@ if prompt := st.chat_input(placeholder):
                     encoded_prompt = urllib.parse.quote(enhanced_prompt)
                     random_seed = random.randint(1000, 999999)
 
-                    # Requests 1024x1150 so we can cleanly crop the bottom 126px watermark
                     image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1150&model=turbo&seed={random_seed}&nologo=true"
 
                     response = requests.get(image_url, timeout=30)
@@ -463,7 +460,7 @@ if prompt := st.chat_input(placeholder):
                 st.warning(warning_text)
                 active_msgs.append({"role": "assistant", "type": "text", "content": warning_text})
         elif not client:
-            st.error("Gemini API key is not valid. Please configure a valid key starting with 'AIzaSy'.")
+            st.error("Gemini client is not initialized. Please verify your GEMINI_API_KEY.")
         else:
             rag_prompt = (
                 f"You are an expert document analysis assistant. Answer the user's question accurately and strictly based on the following document content.\n\n"
@@ -481,19 +478,19 @@ if prompt := st.chat_input(placeholder):
                             )
                             response_text = res.text
                             break
-                        except APIError:
+                        except Exception:
                             continue
 
                 if response_text:
                     st.markdown(response_text)
                     active_msgs.append({"role": "assistant", "type": "text", "content": response_text})
                 else:
-                    st.error("Failed to generate response. Please check your API quota or key.")
+                    st.error("Failed to generate response. Please check your model access.")
 
     # 3. Chat Assistant
     else:
         if not client:
-            st.error("Gemini API key is not valid. Please configure a valid key starting with 'AIzaSy'.")
+            st.error("Gemini client is not initialized. Please verify your GEMINI_API_KEY.")
         else:
             persona_prompts = {
                 "Code Mentor": "You are an elite software architect. Provide clean, production-grade code, clear explanations, and modern best practices.",
@@ -515,12 +512,12 @@ if prompt := st.chat_input(placeholder):
                             )
                             response_text = res.text
                             break
-                        except APIError as api_err:
-                            response_text = f"Gemini API Error: {api_err.message}"
-                            break
+                        except Exception as err:
+                            response_text = f"API Error ({m}): {str(err)}"
+                            continue
 
-                if response_text and not response_text.startswith("Gemini API Error:"):
+                if response_text and not response_text.startswith("API Error"):
                     st.markdown(response_text)
                     active_msgs.append({"role": "assistant", "type": "text", "content": response_text})
                 else:
-                    st.error(response_text or "Unable to reach Gemini API. Please check your API key in Streamlit Secrets.")
+                    st.error(response_text or "Unable to reach Gemini API. Please check your model name and key.")
