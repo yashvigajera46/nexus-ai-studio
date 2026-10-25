@@ -153,7 +153,7 @@ THEMES = {
 
 theme_conf = THEMES[st.session_state.active_theme]
 
-# CSS styling for interface, visible sidebar control, and removed Streamlit branding
+# CSS styling for interface, visible sidebar toggle, and stealth mode
 st.markdown(f"""
 <style>
     /* Full App Canvas */
@@ -162,13 +162,13 @@ st.markdown(f"""
         color: #f1f5f9;
     }}
     
-    /* Ensure header remains present so the sidebar button has a mounting point */
+    /* Ensure the header bar is active so the sidebar toggle is present */
     header[data-testid="stHeader"] {{
         background: transparent !important;
         display: block !important;
     }}
 
-    /* Keep the left sidebar button (>>) visible and functional */
+    /* Keep the left sidebar button (>>) visible and clickable */
     [data-testid="collapsedControl"],
     [data-testid="collapsedControl"] button,
     button[data-testid="baseButton-headerNoPadding"] {{
@@ -178,7 +178,7 @@ st.markdown(f"""
         z-index: 999999 !important;
     }}
 
-    /* Selectively hide ONLY the right-side tools: GitHub link, Fork button, 3-dots menu */
+    /* Hide ONLY right-side tools: GitHub icon, Fork button, 3-dots menu */
     [data-testid="stToolbarActions"],
     header a[href*="github.com"],
     header .stDeployButton,
@@ -189,7 +189,7 @@ st.markdown(f"""
         visibility: hidden !important;
     }}
 
-    /* Hide Streamlit bottom footer and floating viewer badges */
+    /* Hide Streamlit bottom footer and viewer badges */
     footer {{
         display: none !important;
         visibility: hidden !important;
@@ -437,7 +437,7 @@ for idx, msg in enumerate(active_msgs):
             st.image(msg["content"], caption=msg.get("caption", "Generated Artwork"), use_container_width=True)
             if "bytes" in msg:
                 st.download_button(
-                    label="📥 Download High-Res Image",
+                    label="📥 Download",
                     data=msg["bytes"],
                     file_name="nexus_artwork.png",
                     mime="image/png",
@@ -483,35 +483,42 @@ if prompt := st.chat_input(placeholder):
     # 1. Image Mode
     if app_mode == "🎨 Image Generator":
         with st.chat_message("assistant"):
-            with st.spinner("Generating artwork with Flux Engine..."):
+            with st.spinner("Creating high-definition artwork with Flux..."):
                 try:
-                    enhanced_prompt = f"{prompt}, 8k resolution, photorealistic, intricate details, masterwork"
+                    # Clean and adapt prompt style
+                    base_prompt = prompt.strip()
+                    stylized_keywords = ["cartoon", "anime", "chibi", "illustration", "painting", "render", "figurine", "3d", "tinytan"]
+                    if not any(k in base_prompt.lower() for k in stylized_keywords):
+                        enhanced_prompt = f"{base_prompt}, high detail, 4k, studio lighting"
+                    else:
+                        enhanced_prompt = f"{base_prompt}, high detail, masterpiece, 3D digital art"
+                    
                     encoded_prompt = urllib.parse.quote(enhanced_prompt)
                     random_seed = random.randint(1000, 999999)
-                    image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1280&height=800&model=flux&seed={random_seed}&nologo=true&enhance=true"
                     
-                    response = requests.get(image_url, timeout=35)
+                    # 1024x1024 square prevents squished distortion and cropping bugs
+                    image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&model=flux&seed={random_seed}&nologo=true"
+                    
+                    response = requests.get(image_url, timeout=40)
                     if response.status_code == 200:
                         img = Image.open(io.BytesIO(response.content))
-                        w, h = img.size
-                        clean_img = img.crop((0, 0, w, h - 35))
                         
                         buf = io.BytesIO()
-                        clean_img.save(buf, format="PNG")
+                        img.save(buf, format="PNG")
                         clean_bytes = buf.getvalue()
                         
-                        st.image(clean_img, caption=prompt, use_container_width=True)
+                        st.image(img, caption=prompt, use_container_width=True)
                         active_msgs.append({
                             "role": "assistant",
                             "type": "image",
-                            "content": clean_img,
+                            "content": img,
                             "bytes": clean_bytes,
                             "caption": prompt
                         })
                         save_all_sessions()
                         st.rerun()
                     else:
-                        st.error("Image server busy. Please press Enter to generate again.")
+                        st.error("Image server busy. Please submit your prompt once more.")
                 except Exception as e:
                     st.error(f"Image error: {str(e)}")
 
