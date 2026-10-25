@@ -24,22 +24,26 @@ st.set_page_config(
 # ----------------- CREDENTIALS & CLIENT -----------------
 load_dotenv()
 
-# Prioritize Streamlit Cloud Secrets, fallback to local .env
+# Streamlit Cloud secrets take priority; fallback to local environment
 api_key = None
 if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
     api_key = st.secrets["GEMINI_API_KEY"]
 else:
     api_key = os.getenv("GEMINI_API_KEY")
 
-if not api_key:
-    st.error("Missing Gemini API Key. Please add `GEMINI_API_KEY` to your Streamlit Cloud Secrets or local `.env` file.")
-    st.stop()
+client = None
+if api_key and api_key.startswith("AIzaSy"):
+    try:
+        client = genai.Client(api_key=api_key)
+    except Exception as e:
+        st.error(f"Error initializing Gemini client: {e}")
+else:
+    st.error("Invalid or missing Gemini API key. Your key must start with 'AIzaSy'. Please update it in Streamlit Settings ➔ Secrets.")
 
-client = genai.Client(api_key=api_key)
 MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
 
 # ----------------- ISOLATED USER SESSION STATE -----------------
-# All storage exists strictly in this browser session's RAM (zero shared disk access)
+# Storage exists purely in the visitor's browser memory (zero shared file persistence)
 if "sessions" not in st.session_state:
     st.session_state.sessions = {
         "New Conversation": [
@@ -92,7 +96,7 @@ THEMES = {
 
 theme_conf = THEMES[st.session_state.active_theme]
 
-# UI CSS: Keeps navigation arrow visible, eliminates branding, protects layout
+# CSS styling for custom clean interface and stealth mode
 st.markdown(f"""
 <style>
     .stApp {{
@@ -105,7 +109,7 @@ st.markdown(f"""
         display: block !important;
     }}
 
-    /* Sidebar toggle button always accessible */
+    /* Keep the left sidebar toggle arrow visible and clickable */
     [data-testid="collapsedControl"],
     [data-testid="collapsedControl"] button,
     button[data-testid="baseButton-headerNoPadding"] {{
@@ -115,7 +119,7 @@ st.markdown(f"""
         z-index: 999999 !important;
     }}
 
-    /* Hide right-hand toolbar, GitHub source button, and 3-dots menu */
+    /* Selectively hide GitHub buttons, Fork icons, and 3-dots menus */
     [data-testid="stToolbarActions"],
     header a[href*="github.com"],
     header .stDeployButton,
@@ -126,11 +130,8 @@ st.markdown(f"""
         visibility: hidden !important;
     }}
 
-    /* Hide footer and viewer counter badges */
-    footer {{
-        display: none !important;
-        visibility: hidden !important;
-    }}
+    /* Hide footer and viewer badges */
+    footer,
     div[class*="viewerBadge"],
     div[data-testid="stStatusWidget"],
     .viewerBadge_container__1QSob {{
@@ -343,7 +344,7 @@ if app_mode == "🖼️ Art Gallery":
                 all_images.append(m)
 
     if not all_images:
-        st.info("No generated images yet! Switch to '🎨 Image Generator' mode and create artwork.")
+        st.info("No generated images yet in this session! Switch to '🎨 Image Generator' mode and create artwork.")
     else:
         cols = st.columns(3)
         for idx, img_item in enumerate(all_images):
@@ -408,7 +409,7 @@ if prompt := st.chat_input(placeholder):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # 1. Image Mode (No Watermark + Adaptive Stylization)
+    # 1. Image Mode: Fast turbo generation with margin-crop for zero watermark
     if app_mode == "🎨 Image Generator":
         with st.chat_message("assistant"):
             with st.spinner("Generating artwork..."):
@@ -417,22 +418,21 @@ if prompt := st.chat_input(placeholder):
                     stylized = ["chibi", "tinytan", "figurine", "3d", "anime", "cartoon", "render"]
                     
                     if any(k in base_prompt.lower() for k in stylized):
-                        enhanced_prompt = f"{base_prompt}, collectible 3D figurine, smooth clay material, studio lighting, centered composition"
+                        enhanced_prompt = f"{base_prompt}, collectible 3D figurine, smooth vinyl clay, clean studio lighting, centered"
                     else:
-                        enhanced_prompt = f"{base_prompt}, 4k resolution, clean lighting, sharp focus"
+                        enhanced_prompt = f"{base_prompt}, high resolution, studio photography, sharp focus"
 
                     encoded_prompt = urllib.parse.quote(enhanced_prompt)
                     random_seed = random.randint(1000, 999999)
 
-                    # Fetch at 1024x1150 so we can cut the 126px bottom banner off completely
-                    image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1150&model=flux&seed={random_seed}&nologo=true"
+                    # Requests 1024x1150 so we can cleanly crop the bottom 126px watermark
+                    image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1150&model=turbo&seed={random_seed}&nologo=true"
 
-                    response = requests.get(image_url, timeout=45)
+                    response = requests.get(image_url, timeout=30)
                     if response.status_code == 200:
                         raw_img = Image.open(io.BytesIO(response.content))
                         w, h = raw_img.size
 
-                        # Crop out the entire bottom watermark
                         clean_img = raw_img.crop((0, 0, w, h - 126))
 
                         buf = io.BytesIO()
@@ -449,7 +449,9 @@ if prompt := st.chat_input(placeholder):
                         })
                         st.rerun()
                     else:
-                        st.error("Image generation server busy. Please submit your prompt again.")
+                        st.error("Image server busy. Please submit your prompt again.")
+                except requests.exceptions.Timeout:
+                    st.error("The free image server took too long. Please try again.")
                 except Exception as e:
                     st.error(f"Image error: {str(e)}")
 
@@ -460,6 +462,8 @@ if prompt := st.chat_input(placeholder):
                 warning_text = "Please upload a PDF or TXT file using the sidebar first so I have data to reference!"
                 st.warning(warning_text)
                 active_msgs.append({"role": "assistant", "type": "text", "content": warning_text})
+        elif not client:
+            st.error("Gemini API key is not valid. Please configure a valid key starting with 'AIzaSy'.")
         else:
             rag_prompt = (
                 f"You are an expert document analysis assistant. Answer the user's question accurately and strictly based on the following document content.\n\n"
@@ -484,35 +488,39 @@ if prompt := st.chat_input(placeholder):
                     st.markdown(response_text)
                     active_msgs.append({"role": "assistant", "type": "text", "content": response_text})
                 else:
-                    st.error("Server is busy. Please resend your message.")
+                    st.error("Failed to generate response. Please check your API quota or key.")
 
     # 3. Chat Assistant
     else:
-        persona_prompts = {
-            "Code Mentor": "You are an elite software architect. Provide clean, production-grade code, clear explanations, and modern best practices.",
-            "Concise Pro": "Deliver high-impact, direct bullet points with zero conversational fluff.",
-            "Creative Explainer": "Break down complex topics into vivid real-world analogies and engaging storytelling.",
-            "Research Analyst": "Provide structured, rigorous, and deeply technical evaluations with key trade-offs."
-        }
-        system_instruction = persona_prompts[bot_persona]
-        full_prompt = f"System Instruction: {system_instruction}\n\nUser Question: {prompt}"
+        if not client:
+            st.error("Gemini API key is not valid. Please configure a valid key starting with 'AIzaSy'.")
+        else:
+            persona_prompts = {
+                "Code Mentor": "You are an elite software architect. Provide clean, production-grade code, clear explanations, and modern best practices.",
+                "Concise Pro": "Deliver high-impact, direct bullet points with zero conversational fluff.",
+                "Creative Explainer": "Break down complex topics into vivid real-world analogies and engaging storytelling.",
+                "Research Analyst": "Provide structured, rigorous, and deeply technical evaluations with key trade-offs."
+            }
+            system_instruction = persona_prompts[bot_persona]
+            full_prompt = f"System Instruction: {system_instruction}\n\nUser Question: {prompt}"
 
-        response_text = ""
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                for m in MODELS:
-                    try:
-                        res = client.models.generate_content(
-                            model=m,
-                            contents=full_prompt,
-                        )
-                        response_text = res.text
-                        break
-                    except APIError:
-                        continue
+            response_text = ""
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    for m in MODELS:
+                        try:
+                            res = client.models.generate_content(
+                                model=m,
+                                contents=full_prompt,
+                            )
+                            response_text = res.text
+                            break
+                        except APIError as api_err:
+                            response_text = f"Gemini API Error: {api_err.message}"
+                            break
 
-            if response_text:
-                st.markdown(response_text)
-                active_msgs.append({"role": "assistant", "type": "text", "content": response_text})
-            else:
-                st.error("Server is busy. Please resend your message.")
+                if response_text and not response_text.startswith("Gemini API Error:"):
+                    st.markdown(response_text)
+                    active_msgs.append({"role": "assistant", "type": "text", "content": response_text})
+                else:
+                    st.error(response_text or "Unable to reach Gemini API. Please check your API key in Streamlit Secrets.")
