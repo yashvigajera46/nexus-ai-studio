@@ -1,10 +1,8 @@
 import io
 import os
 import random
-import sqlite3
 import time
 import urllib.parse
-from datetime import datetime
 from PIL import Image
 import requests
 import streamlit as st
@@ -22,54 +20,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- PERSISTENT SEARCH & QUERY DATABASE -----------------
-DB_FILE = "nexus_vault.db"
-
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS global_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            mode TEXT,
-            query TEXT,
-            response TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-def log_event(mode, query, response):
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        c = conn.cursor()
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        c.execute(
-            "INSERT INTO global_history (timestamp, mode, query, response) VALUES (?, ?, ?, ?)",
-            (now, mode, query, response)
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Logging error: {e}")
-
-def get_all_logs(search_filter=""):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    if search_filter:
-        c.execute(
-            "SELECT timestamp, mode, query, response FROM global_history WHERE query LIKE ? OR response LIKE ? ORDER BY id DESC",
-            (f"%{search_filter}%", f"%{search_filter}%")
-        )
-    else:
-        c.execute("SELECT timestamp, mode, query, response FROM global_history ORDER BY id DESC")
-    rows = c.fetchall()
-    conn.close()
-    return rows
-
-init_db()
-
 # ----------------- CREDENTIALS & CLIENT -----------------
 load_dotenv()
 
@@ -86,6 +36,8 @@ if api_key:
     try:
         clean_key = str(api_key).strip().strip("'\"")
         client = genai.Client(api_key=clean_key)
+        
+        # Dynamically discover which models your key supports
         for m in client.models.list():
             m_name = m.name.replace("models/", "")
             if "flash" in m_name or "gemini" in m_name:
@@ -93,10 +45,12 @@ if api_key:
     except Exception as e:
         st.error(f"Error connecting to Gemini: {e}")
 
+# Fallback sequence if listing is restricted
 if not AVAILABLE_MODELS:
     AVAILABLE_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
 
-# ----------------- SESSION STATES -----------------
+# ----------------- STRICT PRIVATE IN-MEMORY SESSION STATES -----------------
+# 1. User's isolated text conversations
 if "sessions" not in st.session_state:
     st.session_state.sessions = {
         "New Conversation": [
@@ -104,6 +58,7 @@ if "sessions" not in st.session_state:
         ]
     }
 
+# 2. User's isolated image history
 if "image_history" not in st.session_state:
     st.session_state.image_history = []
 
@@ -165,6 +120,7 @@ st.markdown(f"""
         display: block !important;
     }}
 
+    /* Keep the sidebar toggle arrow visible and functional */
     [data-testid="collapsedControl"],
     [data-testid="collapsedControl"] button,
     button[data-testid="baseButton-headerNoPadding"] {{
@@ -174,6 +130,7 @@ st.markdown(f"""
         z-index: 999999 !important;
     }}
 
+    /* Selectively hide GitHub buttons, Fork icons, and 3-dots menus */
     [data-testid="stToolbarActions"],
     header a[href*="github.com"],
     header .stDeployButton,
@@ -184,6 +141,7 @@ st.markdown(f"""
         visibility: hidden !important;
     }}
 
+    /* Hide footer and viewer badges */
     footer,
     div[class*="viewerBadge"],
     div[data-testid="stStatusWidget"],
@@ -244,17 +202,10 @@ st.markdown(f"""
         font-size: 0.9rem;
         margin-bottom: 20px;
     }}
-    .history-card {{
-        background: #141721;
-        border: 1px solid #232938;
-        border-radius: 10px;
-        padding: 14px 18px;
-        margin-bottom: 12px;
-    }}
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- SIDEBAR -----------------
+# ----------------- SIDEBAR (PERSONAL TO EACH USER) -----------------
 with st.sidebar:
     st.markdown("### ✨ **Nexus AI**")
 
@@ -272,7 +223,7 @@ with st.sidebar:
     
     app_mode = st.radio(
         "Mode:",
-        ["💬 Chat Assistant", "🎨 Image Generator", "🖼️ Art Gallery", "📄 Document Q&A (RAG)", "📜 Global History Explorer"],
+        ["💬 Chat Assistant", "🎨 Image Generator", "🖼️ Art Gallery", "📄 Document Q&A (RAG)"],
         index=0
     )
 
@@ -308,8 +259,8 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Persistent search & chat switchers in sidebar
-    search_query = st.text_input("🔍 Search chats...", placeholder="Type keywords...").lower()
+    # Persistent personal chats list (Only visible in this user's browser)
+    search_query = st.text_input("🔍 Search your chats...", placeholder="Type keywords...").lower()
 
     def render_chat_row(s_name, is_pinned=False):
         c1, c2, c3, c4 = st.columns([0.55, 0.15, 0.15, 0.15])
@@ -368,42 +319,28 @@ with st.sidebar:
     for s_name in recents_visible:
         render_chat_row(s_name, is_pinned=False)
 
+    st.markdown("---")
+    cur_chat = st.session_state.sessions.get(st.session_state.current_session, [])
+    export_text = "\n\n".join([f"**{m['role'].upper()}**: {m['content']}" for m in cur_chat])
+    st.download_button(
+        label="💾 Export Current Chat (.md)",
+        data=export_text,
+        file_name=f"{st.session_state.current_session}.md",
+        mime="text/markdown",
+        use_container_width=True
+    )
+
 # Header
 st.markdown("<div class='hero-title'>Nexus AI Studio ✨</div>", unsafe_allow_html=True)
 st.markdown(f"<div class='hero-subtitle'>Mode: <b>{app_mode}</b></div>", unsafe_allow_html=True)
 
 # ==========================================
-# PAGE 1: 📜 GLOBAL HISTORY EXPLORER
+# PAGE 1: 🖼️ ART GALLERY (USER'S OWN IMAGES)
 # ==========================================
-if app_mode == "📜 Global History Explorer":
-    st.markdown("### 📜 **Search & Activity Vault**")
-    st.caption("Browse all historical queries, prompts, and generations submitted across all users and sessions.")
-
-    search_term = st.text_input("🔍 Search all recorded logs:", placeholder="Filter by keywords...")
-    logs = get_all_logs(search_term)
-
-    if not logs:
-        st.info("No recorded history found matching your search.")
-    else:
-        st.markdown(f"**Found {len(logs)} log entries:**")
-        for ts, mode_name, q, r in logs:
-            with st.expander(f"🕒 [{ts}] | {mode_name} ➔ {q[:60]}..."):
-                st.markdown(f"**Full Query / Prompt:**")
-                st.info(q)
-                st.markdown(f"**Saved Answer / Action:**")
-                if "Image Generated" in r:
-                    st.success(r)
-                else:
-                    st.markdown(r)
-    st.stop()
-
-# ==========================================
-# PAGE 2: 🖼️ ART GALLERY
-# ==========================================
-elif app_mode == "🖼️ Art Gallery":
-    st.markdown("### 🖼️ **Visual Showcase**")
+if app_mode == "🖼️ Art Gallery":
+    st.markdown("### 🖼️ **Personal Visual Showcase**")
     if not st.session_state.image_history:
-        st.info("No generated images yet! Switch to '🎨 Image Generator' to create your first artwork.")
+        st.info("You haven't generated any images in this session yet! Switch to '🎨 Image Generator' to create artwork.")
     else:
         cols = st.columns(3)
         for idx, img_item in enumerate(reversed(st.session_state.image_history)):
@@ -420,7 +357,7 @@ elif app_mode == "🖼️ Art Gallery":
     st.stop()
 
 # ==========================================
-# PAGE 3: 🎨 HIGH-DEFINITION IMAGE GENERATOR
+# PAGE 2: 🎨 HIGH-DEFINITION IMAGE GENERATOR
 # ==========================================
 elif app_mode == "🎨 Image Generator":
     st.markdown("### 🎨 **AI Image Creation Studio**")
@@ -461,6 +398,7 @@ elif app_mode == "🎨 Image Generator":
                     encoded_prompt = urllib.parse.quote(enhanced)
                     random_seed = random.randint(1000, 999999)
 
+                    # 1024x1150 turbo pipeline delivers high resolution in ~4s without timeouts
                     image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1150&model=turbo&seed={random_seed}&nologo=true"
 
                     response = requests.get(image_url, timeout=30)
@@ -468,6 +406,7 @@ elif app_mode == "🎨 Image Generator":
                         raw_img = Image.open(io.BytesIO(response.content))
                         w, h = raw_img.size
 
+                        # Crop out the bottom 126px watermark margin, leaving a crisp 1024x1024 square
                         clean_img = raw_img.crop((0, 0, w, h - 126))
 
                         buf = io.BytesIO()
@@ -479,9 +418,6 @@ elif app_mode == "🎨 Image Generator":
                             "bytes": clean_bytes,
                             "caption": prompt
                         })
-                        
-                        # Save image prompt to permanent database history
-                        log_event("🎨 Image Generation", prompt, "Image Generated Successfully (1024x1024 Turbo)")
                         st.rerun()
                     else:
                         st.error("Image server busy. Please send your prompt again.")
@@ -491,7 +427,7 @@ elif app_mode == "🎨 Image Generator":
                     st.error(f"Image error: {str(e)}")
 
 # ==========================================
-# PAGE 4: 📄 DOCUMENT Q&A (RAG)
+# PAGE 3: 📄 DOCUMENT Q&A (RAG)
 # ==========================================
 elif app_mode == "📄 Document Q&A (RAG)":
     st.markdown("### 📄 **Document Intelligence (RAG)**")
@@ -532,13 +468,11 @@ elif app_mode == "📄 Document Q&A (RAG)":
 
                     if generated_text:
                         placeholder_box.markdown(generated_text)
-                        # Save RAG search to permanent database history
-                        log_event(f"📄 Document Q&A ({st.session_state.uploaded_file_name})", prompt, generated_text)
                     else:
                         placeholder_box.error("Unable to answer from the document. Please try again.")
 
 # ==========================================
-# PAGE 5: 💬 CHAT ASSISTANT
+# PAGE 4: 💬 CHAT ASSISTANT
 # ==========================================
 else:
     active_msgs = st.session_state.sessions[st.session_state.current_session]
@@ -582,6 +516,7 @@ else:
 
                     for m in AVAILABLE_MODELS:
                         try:
+                            # Natural, direct prompt with zero forced persona wrappers
                             res = client.models.generate_content(
                                 model=m,
                                 contents=prompt,
@@ -596,7 +531,5 @@ else:
                     if generated_text:
                         placeholder_box.markdown(generated_text)
                         active_msgs.append({"role": "assistant", "content": generated_text})
-                        # Save Chat search and response to permanent database history
-                        log_event("💬 Chat Assistant", prompt, generated_text)
                     else:
                         placeholder_box.error(f"Could not reach models. Details: {' | '.join(error_logs[:2])}")
