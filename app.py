@@ -37,7 +37,7 @@ if api_key:
         clean_key = str(api_key).strip().strip("'\"")
         client = genai.Client(api_key=clean_key)
         
-        # Dynamically inspect models available to this specific key
+        # Dynamically discover which models your key supports
         for m in client.models.list():
             m_name = m.name.replace("models/", "")
             if "flash" in m_name or "gemini" in m_name:
@@ -219,14 +219,6 @@ with st.sidebar:
         index=0
     )
 
-    bot_persona = "Smart Assistant (Google style)"
-    if app_mode == "💬 Chat Assistant":
-        bot_persona = st.selectbox(
-            "Persona:",
-            ["Smart Assistant (Google style)", "Code Mentor", "Concise Pro", "Creative Explainer"],
-            index=0
-        )
-
     if app_mode == "📄 Document Q&A (RAG)":
         st.markdown("#### 📂 Upload Document")
         uploaded_doc = st.file_uploader("Upload a PDF or TXT", type=["pdf", "txt"])
@@ -396,7 +388,7 @@ if prompt := st.chat_input(placeholder):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # 1. Image Mode (Turbo + Watermark Cropping)
+    # 1. Image Generator (Turbo + Auto Watermark Cropping)
     if app_mode == "🎨 Image Generator":
         with st.chat_message("assistant"):
             with st.spinner("Generating artwork..."):
@@ -405,7 +397,7 @@ if prompt := st.chat_input(placeholder):
                     encoded_prompt = urllib.parse.quote(clean_p)
                     random_seed = random.randint(1000, 999999)
 
-                    # 768x860 generation to safely crop out the bottom 92px watermark
+                    # 768x860 generation to cleanly cut the 92px bottom banner
                     image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=768&height=860&model=turbo&seed={random_seed}&nologo=true"
 
                     response = requests.get(image_url, timeout=25)
@@ -470,20 +462,11 @@ if prompt := st.chat_input(placeholder):
                     else:
                         placeholder_box.error("Unable to answer from the document. Please try again.")
 
-    # 3. Chat Assistant (Natural Google-style Answers, Reliable Multi-Model Handling)
+    # 3. Chat Assistant (Natural direct AI responses, zero persona forcing)
     else:
         if not client:
             st.error("Gemini API key is not ready. Please verify GEMINI_API_KEY in Secrets.")
         else:
-            persona_prompts = {
-                "Smart Assistant (Google style)": "You are a helpful, knowledgeable, and clear AI assistant. Answer questions directly, naturally, and accurately, just like Google.",
-                "Code Mentor": "You are an elite software architect. Provide clean code and best practices.",
-                "Concise Pro": "Deliver concise bullet points with zero unnecessary words.",
-                "Creative Explainer": "Break down topics using vivid real-world analogies."
-            }
-            system_instruction = persona_prompts[bot_persona]
-            full_prompt = f"{system_instruction}\n\nUser Question: {prompt}"
-
             with st.chat_message("assistant"):
                 placeholder_box = st.empty()
                 with st.spinner("Thinking..."):
@@ -492,9 +475,10 @@ if prompt := st.chat_input(placeholder):
 
                     for m in AVAILABLE_MODELS:
                         try:
+                            # Direct query with zero persona restriction
                             res = client.models.generate_content(
                                 model=m,
-                                contents=full_prompt,
+                                contents=prompt,
                             )
                             if res and res.text:
                                 generated_text = res.text
