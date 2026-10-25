@@ -153,7 +153,7 @@ THEMES = {
 
 theme_conf = THEMES[st.session_state.active_theme]
 
-# CSS styling for interface, visible sidebar toggle, and stealth mode
+# CSS styling for interface, visible sidebar control, and removed Streamlit branding
 st.markdown(f"""
 <style>
     /* Full App Canvas */
@@ -162,13 +162,13 @@ st.markdown(f"""
         color: #f1f5f9;
     }}
     
-    /* Ensure the header bar is active so the sidebar toggle is present */
+    /* Keep header active so sidebar button functions */
     header[data-testid="stHeader"] {{
         background: transparent !important;
         display: block !important;
     }}
 
-    /* Keep the left sidebar button (>>) visible and clickable */
+    /* Keep the left sidebar button (>>) visible and functional */
     [data-testid="collapsedControl"],
     [data-testid="collapsedControl"] button,
     button[data-testid="baseButton-headerNoPadding"] {{
@@ -178,7 +178,7 @@ st.markdown(f"""
         z-index: 999999 !important;
     }}
 
-    /* Hide ONLY right-side tools: GitHub icon, Fork button, 3-dots menu */
+    /* Selectively hide ONLY right-side tools: GitHub link, Fork button, 3-dots menu */
     [data-testid="stToolbarActions"],
     header a[href*="github.com"],
     header .stDeployButton,
@@ -189,7 +189,7 @@ st.markdown(f"""
         visibility: hidden !important;
     }}
 
-    /* Hide Streamlit bottom footer and viewer badges */
+    /* Hide Streamlit bottom footer and floating viewer badges */
     footer {{
         display: none !important;
         visibility: hidden !important;
@@ -206,7 +206,7 @@ st.markdown(f"""
         border-right: 1px solid {theme_conf["border"]} !important;
     }}
     
-    /* Ensure action buttons in sidebar stay visible */
+    /* Sidebar button styling */
     section[data-testid="stSidebar"] button {{
         color: #f8fafc !important;
         background-color: #1a1e29 !important;
@@ -437,7 +437,7 @@ for idx, msg in enumerate(active_msgs):
             st.image(msg["content"], caption=msg.get("caption", "Generated Artwork"), use_container_width=True)
             if "bytes" in msg:
                 st.download_button(
-                    label="📥 Download",
+                    label="📥 Download High-Res Image",
                     data=msg["bytes"],
                     file_name="nexus_artwork.png",
                     mime="image/png",
@@ -483,35 +483,37 @@ if prompt := st.chat_input(placeholder):
     # 1. Image Mode
     if app_mode == "🎨 Image Generator":
         with st.chat_message("assistant"):
-            with st.spinner("Creating high-definition artwork with Flux..."):
+            with st.spinner("Generating clean artwork with Flux Engine..."):
                 try:
-                    # Clean and adapt prompt style
                     base_prompt = prompt.strip()
-                    stylized_keywords = ["cartoon", "anime", "chibi", "illustration", "painting", "render", "figurine", "3d", "tinytan"]
-                    if not any(k in base_prompt.lower() for k in stylized_keywords):
+                    stylized = ["cartoon", "anime", "chibi", "illustration", "painting", "render", "figurine", "3d", "tinytan"]
+                    if not any(k in base_prompt.lower() for k in stylized):
                         enhanced_prompt = f"{base_prompt}, high detail, 4k, studio lighting"
                     else:
-                        enhanced_prompt = f"{base_prompt}, high detail, masterpiece, 3D digital art"
+                        enhanced_prompt = f"{base_prompt}, masterpiece, 3D blender render, vinyl toy texture"
                     
                     encoded_prompt = urllib.parse.quote(enhanced_prompt)
                     random_seed = random.randint(1000, 999999)
                     
-                    # 1024x1024 square prevents squished distortion and cropping bugs
-                    image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&model=flux&seed={random_seed}&nologo=true"
+                    # Request 1024x1070 so the watermark renders in the extra bottom 46px margin
+                    image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1070&model=flux&seed={random_seed}&nologo=true"
                     
                     response = requests.get(image_url, timeout=40)
                     if response.status_code == 200:
-                        img = Image.open(io.BytesIO(response.content))
+                        raw_img = Image.open(io.BytesIO(response.content))
+                        
+                        # Slice off the bottom watermark band, producing a clean 1024x1024 square
+                        clean_img = raw_img.crop((0, 0, 1024, 1024))
                         
                         buf = io.BytesIO()
-                        img.save(buf, format="PNG")
+                        clean_img.save(buf, format="PNG")
                         clean_bytes = buf.getvalue()
                         
-                        st.image(img, caption=prompt, use_container_width=True)
+                        st.image(clean_img, caption=prompt, use_container_width=True)
                         active_msgs.append({
                             "role": "assistant",
                             "type": "image",
-                            "content": img,
+                            "content": clean_img,
                             "bytes": clean_bytes,
                             "caption": prompt
                         })
