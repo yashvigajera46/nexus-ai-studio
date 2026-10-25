@@ -1,8 +1,10 @@
 import io
 import os
 import random
+import sqlite3
 import time
 import urllib.parse
+from datetime import datetime
 from PIL import Image
 import requests
 import streamlit as st
@@ -20,6 +22,54 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ----------------- PERSISTENT SEARCH & QUERY DATABASE -----------------
+DB_FILE = "nexus_vault.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS global_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            mode TEXT,
+            query TEXT,
+            response TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def log_event(mode, query, response):
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        c.execute(
+            "INSERT INTO global_history (timestamp, mode, query, response) VALUES (?, ?, ?, ?)",
+            (now, mode, query, response)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Logging error: {e}")
+
+def get_all_logs(search_filter=""):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    if search_filter:
+        c.execute(
+            "SELECT timestamp, mode, query, response FROM global_history WHERE query LIKE ? OR response LIKE ? ORDER BY id DESC",
+            (f"%{search_filter}%", f"%{search_filter}%")
+        )
+    else:
+        c.execute("SELECT timestamp, mode, query, response FROM global_history ORDER BY id DESC")
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+init_db()
+
 # ----------------- CREDENTIALS & CLIENT -----------------
 load_dotenv()
 
@@ -36,7 +86,6 @@ if api_key:
     try:
         clean_key = str(api_key).strip().strip("'\"")
         client = genai.Client(api_key=clean_key)
-        
         for m in client.models.list():
             m_name = m.name.replace("models/", "")
             if "flash" in m_name or "gemini" in m_name:
@@ -47,7 +96,7 @@ if api_key:
 if not AVAILABLE_MODELS:
     AVAILABLE_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
 
-# ----------------- SEPARATED SESSION STATES -----------------
+# ----------------- SESSION STATES -----------------
 if "sessions" not in st.session_state:
     st.session_state.sessions = {
         "New Conversation": [
@@ -195,10 +244,17 @@ st.markdown(f"""
         font-size: 0.9rem;
         margin-bottom: 20px;
     }}
+    .history-card {{
+        background: #141721;
+        border: 1px solid #232938;
+        border-radius: 10px;
+        padding: 14px 18px;
+        margin-bottom: 12px;
+    }}
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- SIDEBAR (ALWAYS VISIBLE CHATS) -----------------
+# ----------------- SIDEBAR -----------------
 with st.sidebar:
     st.markdown("### ✨ **Nexus AI**")
 
@@ -216,7 +272,7 @@ with st.sidebar:
     
     app_mode = st.radio(
         "Mode:",
-        ["💬 Chat Assistant", "🎨 Image Generator", "🖼️ Art Gallery", "📄 Document Q&A (RAG)"],
+        ["💬 Chat Assistant", "🎨 Image Generator", "🖼️ Art Gallery", "📄 Document Q&A (RAG)", "📜 Global History Explorer"],
         index=0
     )
 
@@ -252,7 +308,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # PERMANENT SIDEBAR SESSIONS: Kept outside any mode conditional
+    # Persistent search & chat switchers in sidebar
     search_query = st.text_input("🔍 Search chats...", placeholder="Type keywords...").lower()
 
     def render_chat_row(s_name, is_pinned=False):
@@ -260,9 +316,6 @@ with st.sidebar:
         label = s_name if len(s_name) <= 15 else s_name[:12] + "..."
         if c1.button(label, key=f"btn_{s_name}", use_container_width=True, help=s_name):
             st.session_state.current_session = s_name
-            # If clicked while on image mode, automatically return to chat to view it
-            if app_mode != "💬 Chat Assistant":
-                st.session_state.requested_mode = "💬 Chat Assistant"
             st.rerun()
         
         pin_icon = "⭐" if is_pinned else "☆"
@@ -317,15 +370,37 @@ with st.sidebar:
 
 # Header
 st.markdown("<div class='hero-title'>Nexus AI Studio ✨</div>", unsafe_allow_html=True)
-st.markdown(
-    f"<div class='hero-subtitle'>Mode: <b>{app_mode}</b></div>",
-    unsafe_allow_html=True
-)
+st.markdown(f"<div class='hero-subtitle'>Mode: <b>{app_mode}</b></div>", unsafe_allow_html=True)
 
 # ==========================================
-# PAGE 1: 🖼️ ART GALLERY
+# PAGE 1: 📜 GLOBAL HISTORY EXPLORER
 # ==========================================
-if app_mode == "🖼️ Art Gallery":
+if app_mode == "📜 Global History Explorer":
+    st.markdown("### 📜 **Search & Activity Vault**")
+    st.caption("Browse all historical queries, prompts, and generations submitted across all users and sessions.")
+
+    search_term = st.text_input("🔍 Search all recorded logs:", placeholder="Filter by keywords...")
+    logs = get_all_logs(search_term)
+
+    if not logs:
+        st.info("No recorded history found matching your search.")
+    else:
+        st.markdown(f"**Found {len(logs)} log entries:**")
+        for ts, mode_name, q, r in logs:
+            with st.expander(f"🕒 [{ts}] | {mode_name} ➔ {q[:60]}..."):
+                st.markdown(f"**Full Query / Prompt:**")
+                st.info(q)
+                st.markdown(f"**Saved Answer / Action:**")
+                if "Image Generated" in r:
+                    st.success(r)
+                else:
+                    st.markdown(r)
+    st.stop()
+
+# ==========================================
+# PAGE 2: 🖼️ ART GALLERY
+# ==========================================
+elif app_mode == "🖼️ Art Gallery":
     st.markdown("### 🖼️ **Visual Showcase**")
     if not st.session_state.image_history:
         st.info("No generated images yet! Switch to '🎨 Image Generator' to create your first artwork.")
@@ -345,11 +420,11 @@ if app_mode == "🖼️ Art Gallery":
     st.stop()
 
 # ==========================================
-# PAGE 2: 🎨 HIGH-DEFINITION IMAGE GENERATOR
+# PAGE 3: 🎨 HIGH-DEFINITION IMAGE GENERATOR
 # ==========================================
 elif app_mode == "🎨 Image Generator":
     st.markdown("### 🎨 **AI Image Creation Studio**")
-    st.caption("Generate crisp, high-definition 1024px artwork without watermarks.")
+    st.caption("Generate crisp, high-definition 1024px artwork without watermarks in seconds.")
 
     if not st.session_state.image_history:
         st.markdown(
@@ -379,23 +454,20 @@ elif app_mode == "🎨 Image Generator":
             st.markdown(f"**Prompt:** {prompt}")
 
         with st.chat_message("assistant"):
-            with st.spinner("Rendering sharp high-definition artwork..."):
+            with st.spinner("Rendering sharp high-definition artwork (3-5s)..."):
                 try:
                     clean_p = prompt.strip()
-                    # Append sharp focus and octane details to eliminate blur
                     enhanced = f"{clean_p}, sharp focus, highly detailed, 8k resolution, octane 3d render, professional studio lighting"
                     encoded_prompt = urllib.parse.quote(enhanced)
                     random_seed = random.randint(1000, 999999)
 
-                    # 1024x1150 full-resolution request with precise bottom 126px banner cropping
-                    image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1150&model=flux&seed={random_seed}&nologo=true"
+                    image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1150&model=turbo&seed={random_seed}&nologo=true"
 
-                    response = requests.get(image_url, timeout=40)
+                    response = requests.get(image_url, timeout=30)
                     if response.status_code == 200:
                         raw_img = Image.open(io.BytesIO(response.content))
                         w, h = raw_img.size
 
-                        # Crop out the bottom watermark cleanly, leaving a crisp 1024x1024 image
                         clean_img = raw_img.crop((0, 0, w, h - 126))
 
                         buf = io.BytesIO()
@@ -407,16 +479,19 @@ elif app_mode == "🎨 Image Generator":
                             "bytes": clean_bytes,
                             "caption": prompt
                         })
+                        
+                        # Save image prompt to permanent database history
+                        log_event("🎨 Image Generation", prompt, "Image Generated Successfully (1024x1024 Turbo)")
                         st.rerun()
                     else:
-                        st.error("Image engine is momentarily busy. Please resubmit.")
+                        st.error("Image server busy. Please send your prompt again.")
                 except requests.exceptions.Timeout:
-                    st.error("Server took too long to render. Please try sending again.")
+                    st.error("Server took too long to respond. Please try sending again.")
                 except Exception as e:
                     st.error(f"Image error: {str(e)}")
 
 # ==========================================
-# PAGE 3: 📄 DOCUMENT Q&A (RAG)
+# PAGE 4: 📄 DOCUMENT Q&A (RAG)
 # ==========================================
 elif app_mode == "📄 Document Q&A (RAG)":
     st.markdown("### 📄 **Document Intelligence (RAG)**")
@@ -457,11 +532,13 @@ elif app_mode == "📄 Document Q&A (RAG)":
 
                     if generated_text:
                         placeholder_box.markdown(generated_text)
+                        # Save RAG search to permanent database history
+                        log_event(f"📄 Document Q&A ({st.session_state.uploaded_file_name})", prompt, generated_text)
                     else:
                         placeholder_box.error("Unable to answer from the document. Please try again.")
 
 # ==========================================
-# PAGE 4: 💬 CHAT ASSISTANT
+# PAGE 5: 💬 CHAT ASSISTANT
 # ==========================================
 else:
     active_msgs = st.session_state.sessions[st.session_state.current_session]
@@ -519,5 +596,7 @@ else:
                     if generated_text:
                         placeholder_box.markdown(generated_text)
                         active_msgs.append({"role": "assistant", "content": generated_text})
+                        # Save Chat search and response to permanent database history
+                        log_event("💬 Chat Assistant", prompt, generated_text)
                     else:
                         placeholder_box.error(f"Could not reach models. Details: {' | '.join(error_logs[:2])}")
