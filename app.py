@@ -37,7 +37,6 @@ if api_key:
         clean_key = str(api_key).strip().strip("'\"")
         client = genai.Client(api_key=clean_key)
         
-        # Dynamically discover which models your key supports
         for m in client.models.list():
             m_name = m.name.replace("models/", "")
             if "flash" in m_name or "gemini" in m_name:
@@ -49,15 +48,13 @@ if not AVAILABLE_MODELS:
     AVAILABLE_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
 
 # ----------------- SEPARATED SESSION STATES -----------------
-# 1. Text Conversations
 if "sessions" not in st.session_state:
     st.session_state.sessions = {
         "New Conversation": [
-            {"role": "assistant", "content": "Welcome to Nexus AI Studio. What would you like to explore or talk about today?"}
+            {"role": "assistant", "content": "Welcome to Nexus AI Studio. What would you like to explore or create today?"}
         ]
     }
 
-# 2. Dedicated Image History (Completely separated from text chat)
 if "image_history" not in st.session_state:
     st.session_state.image_history = []
 
@@ -106,7 +103,7 @@ THEMES = {
 
 theme_conf = THEMES[st.session_state.active_theme]
 
-# CSS styling
+# UI Styling
 st.markdown(f"""
 <style>
     .stApp {{
@@ -201,7 +198,7 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- SIDEBAR -----------------
+# ----------------- SIDEBAR (ALWAYS VISIBLE CHATS) -----------------
 with st.sidebar:
     st.markdown("### ✨ **Nexus AI**")
 
@@ -255,66 +252,68 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Chat Sessions list is only relevant when in Chat Assistant mode
-    if app_mode == "💬 Chat Assistant":
-        search_query = st.text_input("🔍 Search chats...", placeholder="Type keywords...").lower()
+    # PERMANENT SIDEBAR SESSIONS: Kept outside any mode conditional
+    search_query = st.text_input("🔍 Search chats...", placeholder="Type keywords...").lower()
 
-        def render_chat_row(s_name, is_pinned=False):
-            c1, c2, c3, c4 = st.columns([0.55, 0.15, 0.15, 0.15])
-            label = s_name if len(s_name) <= 15 else s_name[:12] + "..."
-            if c1.button(label, key=f"btn_{s_name}", use_container_width=True, help=s_name):
-                st.session_state.current_session = s_name
-                st.rerun()
-            
-            pin_icon = "⭐" if is_pinned else "☆"
-            if c2.button(pin_icon, key=f"pin_{s_name}", help="Pin / Unpin chat"):
-                if is_pinned:
-                    st.session_state.pinned_chats.discard(s_name)
-                else:
-                    st.session_state.pinned_chats.add(s_name)
-                st.rerun()
-
-            if c3.button("✏️", key=f"ren_{s_name}", help="Rename chat"):
-                st.session_state.rename_target = s_name
-
-            if len(st.session_state.sessions) > 1 and c4.button("🗑️", key=f"del_{s_name}", help="Delete chat"):
+    def render_chat_row(s_name, is_pinned=False):
+        c1, c2, c3, c4 = st.columns([0.55, 0.15, 0.15, 0.15])
+        label = s_name if len(s_name) <= 15 else s_name[:12] + "..."
+        if c1.button(label, key=f"btn_{s_name}", use_container_width=True, help=s_name):
+            st.session_state.current_session = s_name
+            # If clicked while on image mode, automatically return to chat to view it
+            if app_mode != "💬 Chat Assistant":
+                st.session_state.requested_mode = "💬 Chat Assistant"
+            st.rerun()
+        
+        pin_icon = "⭐" if is_pinned else "☆"
+        if c2.button(pin_icon, key=f"pin_{s_name}", help="Pin / Unpin chat"):
+            if is_pinned:
                 st.session_state.pinned_chats.discard(s_name)
-                del st.session_state.sessions[s_name]
-                st.session_state.current_session = list(st.session_state.sessions.keys())[0]
-                st.rerun()
+            else:
+                st.session_state.pinned_chats.add(s_name)
+            st.rerun()
 
-        if st.session_state.rename_target:
-            st.markdown(f"**Rename: `{st.session_state.rename_target}`**")
-            new_name = st.text_input("New Title", value=st.session_state.rename_target, key="rename_input")
-            col_r1, col_r2 = st.columns(2)
-            if col_r1.button("Save", use_container_width=True) and new_name.strip():
-                target = st.session_state.rename_target
-                clean_name = new_name.strip()
-                if clean_name != target:
-                    st.session_state.sessions[clean_name] = st.session_state.sessions.pop(target)
-                    if target in st.session_state.pinned_chats:
-                        st.session_state.pinned_chats.remove(target)
-                        st.session_state.pinned_chats.add(clean_name)
-                    if st.session_state.current_session == target:
-                        st.session_state.current_session = clean_name
-                st.session_state.rename_target = None
-                st.rerun()
-            if col_r2.button("Cancel", use_container_width=True):
-                st.session_state.rename_target = None
-                st.rerun()
+        if c3.button("✏️", key=f"ren_{s_name}", help="Rename chat"):
+            st.session_state.rename_target = s_name
 
-        all_chat_names = [s for s in st.session_state.sessions.keys() if search_query in s.lower()]
+        if len(st.session_state.sessions) > 1 and c4.button("🗑️", key=f"del_{s_name}", help="Delete chat"):
+            st.session_state.pinned_chats.discard(s_name)
+            del st.session_state.sessions[s_name]
+            st.session_state.current_session = list(st.session_state.sessions.keys())[0]
+            st.rerun()
 
-        pinned_visible = [s for s in all_chat_names if s in st.session_state.pinned_chats]
-        if pinned_visible:
-            st.markdown("#### 📌 **Pinned**")
-            for s_name in pinned_visible:
-                render_chat_row(s_name, is_pinned=True)
+    if st.session_state.rename_target:
+        st.markdown(f"**Rename: `{st.session_state.rename_target}`**")
+        new_name = st.text_input("New Title", value=st.session_state.rename_target, key="rename_input")
+        col_r1, col_r2 = st.columns(2)
+        if col_r1.button("Save", use_container_width=True) and new_name.strip():
+            target = st.session_state.rename_target
+            clean_name = new_name.strip()
+            if clean_name != target:
+                st.session_state.sessions[clean_name] = st.session_state.sessions.pop(target)
+                if target in st.session_state.pinned_chats:
+                    st.session_state.pinned_chats.remove(target)
+                    st.session_state.pinned_chats.add(clean_name)
+                if st.session_state.current_session == target:
+                    st.session_state.current_session = clean_name
+            st.session_state.rename_target = None
+            st.rerun()
+        if col_r2.button("Cancel", use_container_width=True):
+            st.session_state.rename_target = None
+            st.rerun()
 
-        recents_visible = [s for s in all_chat_names if s not in st.session_state.pinned_chats]
-        st.markdown("#### 🕒 **Recents**")
-        for s_name in recents_visible:
-            render_chat_row(s_name, is_pinned=False)
+    all_chat_names = [s for s in st.session_state.sessions.keys() if search_query in s.lower()]
+
+    pinned_visible = [s for s in all_chat_names if s in st.session_state.pinned_chats]
+    if pinned_visible:
+        st.markdown("#### 📌 **Pinned**")
+        for s_name in pinned_visible:
+            render_chat_row(s_name, is_pinned=True)
+
+    recents_visible = [s for s in all_chat_names if s not in st.session_state.pinned_chats]
+    st.markdown("#### 🕒 **Recents**")
+    for s_name in recents_visible:
+        render_chat_row(s_name, is_pinned=False)
 
 # Header
 st.markdown("<div class='hero-title'>Nexus AI Studio ✨</div>", unsafe_allow_html=True)
@@ -324,7 +323,7 @@ st.markdown(
 )
 
 # ==========================================
-# PAGE 1: 🖼️ ART GALLERY MODE
+# PAGE 1: 🖼️ ART GALLERY
 # ==========================================
 if app_mode == "🖼️ Art Gallery":
     st.markdown("### 🖼️ **Visual Showcase**")
@@ -346,18 +345,17 @@ if app_mode == "🖼️ Art Gallery":
     st.stop()
 
 # ==========================================
-# PAGE 2: 🎨 DEDICATED IMAGE GENERATOR MODE
+# PAGE 2: 🎨 HIGH-DEFINITION IMAGE GENERATOR
 # ==========================================
 elif app_mode == "🎨 Image Generator":
     st.markdown("### 🎨 **AI Image Creation Studio**")
-    st.caption("Enter a descriptive visual prompt below to generate watermark-free artwork.")
+    st.caption("Generate crisp, high-definition 1024px artwork without watermarks.")
 
-    # Show only generated images (No text conversation leaks here)
     if not st.session_state.image_history:
         st.markdown(
             """
             <div style="text-align: center; padding: 40px; color: #888; border: 1px dashed #333; border-radius: 12px; margin: 20px 0;">
-                No artwork generated yet. Type what you want to create in the box below!
+                No artwork generated yet in this session. Type your visual description below!
             </div>
             """,
             unsafe_allow_html=True
@@ -381,22 +379,24 @@ elif app_mode == "🎨 Image Generator":
             st.markdown(f"**Prompt:** {prompt}")
 
         with st.chat_message("assistant"):
-            with st.spinner("Rendering artwork with Turbo Engine..."):
+            with st.spinner("Rendering sharp high-definition artwork..."):
                 try:
                     clean_p = prompt.strip()
-                    encoded_prompt = urllib.parse.quote(clean_p)
+                    # Append sharp focus and octane details to eliminate blur
+                    enhanced = f"{clean_p}, sharp focus, highly detailed, 8k resolution, octane 3d render, professional studio lighting"
+                    encoded_prompt = urllib.parse.quote(enhanced)
                     random_seed = random.randint(1000, 999999)
 
-                    # 768x860 generation to cleanly cut the 92px bottom banner
-                    image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=768&height=860&model=turbo&seed={random_seed}&nologo=true"
+                    # 1024x1150 full-resolution request with precise bottom 126px banner cropping
+                    image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1150&model=flux&seed={random_seed}&nologo=true"
 
-                    response = requests.get(image_url, timeout=25)
+                    response = requests.get(image_url, timeout=40)
                     if response.status_code == 200:
                         raw_img = Image.open(io.BytesIO(response.content))
                         w, h = raw_img.size
 
-                        # Crop out the bottom watermark
-                        clean_img = raw_img.crop((0, 0, w, h - 92))
+                        # Crop out the bottom watermark cleanly, leaving a crisp 1024x1024 image
+                        clean_img = raw_img.crop((0, 0, w, h - 126))
 
                         buf = io.BytesIO()
                         clean_img.save(buf, format="PNG")
@@ -409,14 +409,14 @@ elif app_mode == "🎨 Image Generator":
                         })
                         st.rerun()
                     else:
-                        st.error("Image server busy. Please send your prompt again.")
+                        st.error("Image engine is momentarily busy. Please resubmit.")
                 except requests.exceptions.Timeout:
-                    st.error("Image server timed out. Please try once more.")
+                    st.error("Server took too long to render. Please try sending again.")
                 except Exception as e:
                     st.error(f"Image error: {str(e)}")
 
 # ==========================================
-# PAGE 3: 📄 DOCUMENT Q&A (RAG) MODE
+# PAGE 3: 📄 DOCUMENT Q&A (RAG)
 # ==========================================
 elif app_mode == "📄 Document Q&A (RAG)":
     st.markdown("### 📄 **Document Intelligence (RAG)**")
@@ -461,7 +461,7 @@ elif app_mode == "📄 Document Q&A (RAG)":
                         placeholder_box.error("Unable to answer from the document. Please try again.")
 
 # ==========================================
-# PAGE 4: 💬 CHAT ASSISTANT MODE
+# PAGE 4: 💬 CHAT ASSISTANT
 # ==========================================
 else:
     active_msgs = st.session_state.sessions[st.session_state.current_session]
