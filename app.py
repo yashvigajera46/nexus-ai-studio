@@ -85,13 +85,24 @@ def save_all_sessions():
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
-# Load client
+# ----------------- CREDENTIALS & CLIENT -----------------
 load_dotenv()
-api_key = os.getenv("GEMINI_API_KEY")
-client = genai.Client(api_key=api_key)
-MODELS = ["gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash"]
 
-# Safe Initialization
+# Checks Streamlit Cloud Secrets first, then falls back to local environment variables
+api_key = None
+if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
+    api_key = st.secrets["GEMINI_API_KEY"]
+else:
+    api_key = os.getenv("GEMINI_API_KEY")
+
+if not api_key:
+    st.error("Missing Gemini API Key. Please add `GEMINI_API_KEY` to your Streamlit Cloud Secrets or local `.env` file.")
+    st.stop()
+
+client = genai.Client(api_key=api_key)
+MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+
+# Safe State Initialization
 if "sessions" not in st.session_state or not st.session_state.sessions:
     loaded_sessions, loaded_pinned = load_all_sessions()
     if not loaded_sessions:
@@ -142,7 +153,7 @@ THEMES = {
 
 theme_conf = THEMES[st.session_state.active_theme]
 
-# CSS to fix icon visibility and button contrast
+# CSS styling for interface and button contrast
 st.markdown(f"""
 <style>
     .stApp {{
@@ -154,7 +165,7 @@ st.markdown(f"""
         border-right: 1px solid {theme_conf["border"]} !important;
     }}
     
-    /* Make all sidebar buttons clearly visible */
+    /* Ensure action buttons in sidebar stay visible */
     section[data-testid="stSidebar"] button {{
         color: #f8fafc !important;
         background-color: #1a1e29 !important;
@@ -258,7 +269,11 @@ with st.sidebar:
     with st.expander("⚙️ Advanced Parameters"):
         temperature = st.slider("Temperature", 0.0, 1.0, 0.7, 0.05)
         enable_tts = st.checkbox("Enable Voice Audio (TTS)", value=False)
-        selected_theme = st.selectbox("UI Accent Palette:", list(THEMES.keys()), index=list(THEMES.keys()).index(st.session_state.active_theme))
+        selected_theme = st.selectbox(
+            "UI Accent Palette:",
+            list(THEMES.keys()),
+            index=list(THEMES.keys()).index(st.session_state.active_theme)
+        )
         if selected_theme != st.session_state.active_theme:
             st.session_state.active_theme = selected_theme
             st.rerun()
@@ -268,7 +283,6 @@ with st.sidebar:
     # Search Bar
     search_query = st.text_input("🔍 Search chats...", placeholder="Type keywords...").lower()
 
-    # Optimized chat row renderer (clean spacing + explicit tooltips)
     def render_chat_row(s_name, is_pinned=False):
         c1, c2, c3, c4 = st.columns([0.55, 0.15, 0.15, 0.15])
         label = s_name if len(s_name) <= 15 else s_name[:12] + "..."
@@ -276,7 +290,6 @@ with st.sidebar:
             st.session_state.current_session = s_name
             st.rerun()
         
-        # Pinned toggle button
         pin_icon = "⭐" if is_pinned else "☆"
         if c2.button(pin_icon, key=f"pin_{s_name}", help="Pin / Unpin chat"):
             if is_pinned:
@@ -286,11 +299,9 @@ with st.sidebar:
             save_all_sessions()
             st.rerun()
 
-        # Rename button
         if c3.button("✏️", key=f"ren_{s_name}", help="Rename chat"):
             st.session_state.rename_target = s_name
 
-        # Delete button
         if len(st.session_state.sessions) > 1 and c4.button("🗑️", key=f"del_{s_name}", help="Delete chat"):
             st.session_state.pinned_chats.discard(s_name)
             del st.session_state.sessions[s_name]
@@ -366,7 +377,7 @@ if app_mode == "🖼️ Art Gallery":
         cols = st.columns(3)
         for idx, img_item in enumerate(all_images):
             with cols[idx % 3]:
-                st.image(img_item["content"], caption=img_item.get("caption", ""), width="stretch")
+                st.image(img_item["content"], caption=img_item.get("caption", ""), use_container_width=True)
                 if "bytes" in img_item:
                     st.download_button(
                         label="📥 Download",
@@ -382,7 +393,7 @@ active_msgs = st.session_state.sessions[st.session_state.current_session]
 for idx, msg in enumerate(active_msgs):
     with st.chat_message(msg["role"]):
         if msg.get("type") == "image":
-            st.image(msg["content"], caption=msg.get("caption", "Generated Artwork"), width="stretch")
+            st.image(msg["content"], caption=msg.get("caption", "Generated Artwork"), use_container_width=True)
             if "bytes" in msg:
                 st.download_button(
                     label="📥 Download High-Res Image",
@@ -448,7 +459,7 @@ if prompt := st.chat_input(placeholder):
                         clean_img.save(buf, format="PNG")
                         clean_bytes = buf.getvalue()
                         
-                        st.image(clean_img, caption=prompt, width="stretch")
+                        st.image(clean_img, caption=prompt, use_container_width=True)
                         active_msgs.append({
                             "role": "assistant",
                             "type": "image",
