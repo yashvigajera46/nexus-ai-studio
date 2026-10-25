@@ -39,8 +39,8 @@ if api_key:
 else:
     st.error("Missing Gemini API key. Please add GEMINI_API_KEY in Streamlit Settings ➔ Secrets.")
 
-# Fast, stable Gemini models
-MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+# Models that work with your key
+MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
 
 # ----------------- ISOLATED USER SESSION STATE -----------------
 if "sessions" not in st.session_state:
@@ -95,7 +95,7 @@ THEMES = {
 
 theme_conf = THEMES[st.session_state.active_theme]
 
-# UI styling
+# CSS styling
 st.markdown(f"""
 <style>
     .stApp {{
@@ -212,7 +212,6 @@ with st.sidebar:
         index=0
     )
 
-    # General AI assistant as the default persona
     bot_persona = "Smart Assistant (Google style)"
     if app_mode == "💬 Chat Assistant":
         bot_persona = st.selectbox(
@@ -459,10 +458,10 @@ if prompt := st.chat_input(placeholder):
                     except Exception:
                         continue
 
-    # 3. Chat Assistant (Immediate Token Streaming, Google-style Persona)
+    # 3. Chat Assistant (Immediate Token Streaming, Google-style Persona, Accurate Error Reporting)
     else:
         if not client:
-            st.error("Gemini API key is not ready.")
+            st.error("Gemini API key is not ready. Please verify GEMINI_API_KEY in Secrets.")
         else:
             persona_prompts = {
                 "Smart Assistant (Google style)": "You are a helpful, knowledgeable, clear, and friendly AI assistant. Answer questions directly, naturally, and accurately, just like Google.",
@@ -477,10 +476,10 @@ if prompt := st.chat_input(placeholder):
                 placeholder_box = st.empty()
                 full_res = ""
                 success = False
+                last_error = ""
 
                 for m in MODELS:
                     try:
-                        # Stream tokens in real-time as they generate
                         response_stream = client.models.generate_content_stream(
                             model=m,
                             contents=full_prompt,
@@ -493,8 +492,9 @@ if prompt := st.chat_input(placeholder):
                         active_msgs.append({"role": "assistant", "type": "text", "content": full_res})
                         success = True
                         break
-                    except Exception:
+                    except Exception as err:
+                        last_error = f"{m}: {str(err)}"
                         continue
 
                 if not success:
-                    placeholder_box.error("Google Gemini is experiencing momentary demand spikes. Please try resending.")
+                    placeholder_box.error(f"Generation error ({last_error})")
