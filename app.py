@@ -41,8 +41,8 @@ if api_key:
 else:
     st.error("Missing Gemini API key. Please add GEMINI_API_KEY in Streamlit Settings ➔ Secrets.")
 
-# Models that work with your key
-MODELS = ["gemini-3.8-flash", "gemini-3.6-flash"]
+# Fallback sequence to handle 503 traffic spikes
+MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
 
 # ----------------- ISOLATED USER SESSION STATE -----------------
 if "sessions" not in st.session_state:
@@ -97,7 +97,7 @@ THEMES = {
 
 theme_conf = THEMES[st.session_state.active_theme]
 
-# CSS styling
+# CSS styling for custom clean interface and stealth mode
 st.markdown(f"""
 <style>
     .stApp {{
@@ -110,6 +110,7 @@ st.markdown(f"""
         display: block !important;
     }}
 
+    /* Keep the left sidebar toggle arrow visible and clickable */
     [data-testid="collapsedControl"],
     [data-testid="collapsedControl"] button,
     button[data-testid="baseButton-headerNoPadding"] {{
@@ -119,6 +120,7 @@ st.markdown(f"""
         z-index: 999999 !important;
     }}
 
+    /* Selectively hide GitHub buttons, Fork icons, and 3-dots menus */
     [data-testid="stToolbarActions"],
     header a[href*="github.com"],
     header .stDeployButton,
@@ -129,6 +131,7 @@ st.markdown(f"""
         visibility: hidden !important;
     }}
 
+    /* Hide footer and viewer badges */
     footer,
     div[class*="viewerBadge"],
     div[data-testid="stStatusWidget"],
@@ -407,7 +410,7 @@ if prompt := st.chat_input(placeholder):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # 1. Image Mode
+    # 1. Image Mode: Fast turbo engine + 126px margin crop
     if app_mode == "🎨 Image Generator":
         with st.chat_message("assistant"):
             with st.spinner("Generating artwork..."):
@@ -471,21 +474,27 @@ if prompt := st.chat_input(placeholder):
             with st.chat_message("assistant"):
                 with st.spinner("Analyzing document context..."):
                     for m in MODELS:
-                        try:
-                            res = client.models.generate_content(
-                                model=m,
-                                contents=rag_prompt,
-                            )
-                            response_text = res.text
+                        for attempt in range(2):
+                            try:
+                                res = client.models.generate_content(
+                                    model=m,
+                                    contents=rag_prompt,
+                                )
+                                response_text = res.text
+                                break
+                            except Exception as err:
+                                if "503" in str(err) and attempt == 0:
+                                    time.sleep(1.5)
+                                    continue
+                                break
+                        if response_text:
                             break
-                        except Exception:
-                            continue
 
                 if response_text:
                     st.markdown(response_text)
                     active_msgs.append({"role": "assistant", "type": "text", "content": response_text})
                 else:
-                    st.error("Failed to generate response. Please check your model access.")
+                    st.error("Servers are experiencing temporary peak demand. Please resend your prompt.")
 
     # 3. Chat Assistant
     else:
@@ -505,19 +514,24 @@ if prompt := st.chat_input(placeholder):
             with st.chat_message("assistant"):
                 with st.spinner("Thinking..."):
                     for m in MODELS:
-                        try:
-                            res = client.models.generate_content(
-                                model=m,
-                                contents=full_prompt,
-                            )
-                            response_text = res.text
+                        for attempt in range(2):
+                            try:
+                                res = client.models.generate_content(
+                                    model=m,
+                                    contents=full_prompt,
+                                )
+                                response_text = res.text
+                                break
+                            except Exception as err:
+                                if "503" in str(err) and attempt == 0:
+                                    time.sleep(1.5)
+                                    continue
+                                break
+                        if response_text:
                             break
-                        except Exception as err:
-                            response_text = f"API Error ({m}): {str(err)}"
-                            continue
 
-                if response_text and not response_text.startswith("API Error"):
+                if response_text:
                     st.markdown(response_text)
                     active_msgs.append({"role": "assistant", "type": "text", "content": response_text})
                 else:
-                    st.error(response_text or "Unable to reach Gemini API. Please check your model name and key.")
+                    st.error("Servers are experiencing temporary peak demand. Please resend your prompt.")
