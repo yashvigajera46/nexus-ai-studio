@@ -153,7 +153,7 @@ THEMES = {
 
 theme_conf = THEMES[st.session_state.active_theme]
 
-# CSS styling for interface, button contrast, and removing Streamlit branding
+# CSS styling for interface, visible sidebar control, and removed Streamlit branding
 st.markdown(f"""
 <style>
     /* Full App Canvas */
@@ -162,25 +162,31 @@ st.markdown(f"""
         color: #f1f5f9;
     }}
     
-    /* Hide top header tools: Fork, GitHub icon, 3-dots menu, deploy button */
-    [data-testid="stToolbar"],
+    /* Ensure header remains present so the sidebar button has a mounting point */
+    header[data-testid="stHeader"] {{
+        background: transparent !important;
+        display: block !important;
+    }}
+
+    /* Keep the left sidebar button (>>) visible and functional */
+    [data-testid="collapsedControl"],
+    [data-testid="collapsedControl"] button,
+    button[data-testid="baseButton-headerNoPadding"] {{
+        display: inline-flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        z-index: 999999 !important;
+    }}
+
+    /* Selectively hide ONLY the right-side tools: GitHub link, Fork button, 3-dots menu */
     [data-testid="stToolbarActions"],
     header a[href*="github.com"],
     header .stDeployButton,
-    header button[title="View source on GitHub"] {{
+    header button[title="View source on GitHub"],
+    #MainMenu,
+    [data-testid="stMainMenu"] {{
         display: none !important;
         visibility: hidden !important;
-    }}
-
-    /* Make header bar clean and transparent */
-    header[data-testid="stHeader"] {{
-        background: transparent !important;
-    }}
-
-    /* Ensure mobile sidebar toggle arrow remains accessible */
-    [data-testid="collapsedControl"] {{
-        display: block !important;
-        visibility: visible !important;
     }}
 
     /* Hide Streamlit bottom footer and floating viewer badges */
