@@ -1,8 +1,11 @@
 import io
+import json
 import os
 import random
 import time
 import urllib.parse
+import uuid
+import base64
 from PIL import Image
 import requests
 import streamlit as st
@@ -20,6 +23,95 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ----------------- PRIVATE USER ISOLATION (URL-KEYED) -----------------
+# Ensures your session survives page refreshes while remaining completely invisible to anyone else
+STORAGE_DIR = "user_vaults"
+os.makedirs(STORAGE_DIR, exist_ok=True)
+
+if "user" not in st.query_params:
+    user_key = uuid.uuid4().hex[:10]
+    st.query_params["user"] = user_key
+else:
+    user_key = st.query_params["user"]
+
+USER_STORE_FILE = os.path.join(STORAGE_DIR, f"{user_key}.json")
+
+def load_user_data():
+    if os.path.exists(USER_STORE_FILE):
+        try:
+            with open(USER_STORE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "sessions": {
+            "New Conversation": [
+                {"role": "assistant", "content": "Welcome to Nexus AI Studio. What would you like to explore or create today?"}
+            ]
+        },
+        "image_history": [],
+        "pinned_chats": []
+    }
+
+def save_user_data():
+    try:
+        # Convert non-serializable PIL images to base64 for persistent restore
+        serializable_images = []
+        for img in st.session_state.image_history:
+            serializable_images.append({
+                "caption": img.get("caption", ""),
+                "b64": base64.b64encode(img["bytes"]).decode("utf-8")
+            })
+
+        data = {
+            "sessions": st.session_state.sessions,
+            "image_history": serializable_images,
+            "pinned_chats": list(st.session_state.pinned_chats)
+        }
+        with open(USER_STORE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"Save error: {e}")
+
+# Initialize session from user's private store
+if "initialized" not in st.session_state:
+    user_cache = load_user_data()
+    st.session_state.sessions = user_cache.get("sessions", {
+        "New Conversation": [
+            {"role": "assistant", "content": "Welcome to Nexus AI Studio. What would you like to explore or create today?"}
+        ]
+    })
+    
+    # Reconstruct images from base64
+    restored_images = []
+    for item in user_cache.get("image_history", []):
+        try:
+            img_bytes = base64.b64decode(item["b64"])
+            pil_img = Image.open(io.BytesIO(img_bytes))
+            restored_images.append({
+                "content": pil_img,
+                "bytes": img_bytes,
+                "caption": item.get("caption", "")
+            })
+        except Exception:
+            continue
+
+    st.session_state.image_history = restored_images
+    st.session_state.pinned_chats = set(user_cache.get("pinned_chats", []))
+    st.session_state.initialized = True
+
+if "current_session" not in st.session_state or st.session_state.current_session not in st.session_state.sessions:
+    st.session_state.current_session = list(st.session_state.sessions.keys())[0]
+
+if "doc_context" not in st.session_state:
+    st.session_state.doc_context = ""
+if "uploaded_file_name" not in st.session_state:
+    st.session_state.uploaded_file_name = None
+if "rename_target" not in st.session_state:
+    st.session_state.rename_target = None
+if "active_theme" not in st.session_state:
+    st.session_state.active_theme = "Sunset Peach"
+
 # ----------------- CREDENTIALS & CLIENT -----------------
 load_dotenv()
 
@@ -36,8 +128,6 @@ if api_key:
     try:
         clean_key = str(api_key).strip().strip("'\"")
         client = genai.Client(api_key=clean_key)
-        
-        # Dynamically discover which models your key supports
         for m in client.models.list():
             m_name = m.name.replace("models/", "")
             if "flash" in m_name or "gemini" in m_name:
@@ -45,37 +135,8 @@ if api_key:
     except Exception as e:
         st.error(f"Error connecting to Gemini: {e}")
 
-# Fallback sequence if listing is restricted
 if not AVAILABLE_MODELS:
     AVAILABLE_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
-
-# ----------------- STRICT PRIVATE IN-MEMORY SESSION STATES -----------------
-# 1. User's isolated text conversations
-if "sessions" not in st.session_state:
-    st.session_state.sessions = {
-        "New Conversation": [
-            {"role": "assistant", "content": "Welcome to Nexus AI Studio. What would you like to explore or create today?"}
-        ]
-    }
-
-# 2. User's isolated image history
-if "image_history" not in st.session_state:
-    st.session_state.image_history = []
-
-if "pinned_chats" not in st.session_state:
-    st.session_state.pinned_chats = set()
-
-if "current_session" not in st.session_state or st.session_state.current_session not in st.session_state.sessions:
-    st.session_state.current_session = list(st.session_state.sessions.keys())[0]
-
-if "doc_context" not in st.session_state:
-    st.session_state.doc_context = ""
-if "uploaded_file_name" not in st.session_state:
-    st.session_state.uploaded_file_name = None
-if "rename_target" not in st.session_state:
-    st.session_state.rename_target = None
-if "active_theme" not in st.session_state:
-    st.session_state.active_theme = "Sunset Peach"
 
 # ----------------- THEMES -----------------
 THEMES = {
@@ -107,20 +168,16 @@ THEMES = {
 
 theme_conf = THEMES[st.session_state.active_theme]
 
-# UI Styling
 st.markdown(f"""
 <style>
     .stApp {{
         background: {theme_conf["bg"]};
         color: #f1f5f9;
     }}
-    
     header[data-testid="stHeader"] {{
         background: transparent !important;
         display: block !important;
     }}
-
-    /* Keep the sidebar toggle arrow visible and functional */
     [data-testid="collapsedControl"],
     [data-testid="collapsedControl"] button,
     button[data-testid="baseButton-headerNoPadding"] {{
@@ -129,8 +186,6 @@ st.markdown(f"""
         opacity: 1 !important;
         z-index: 999999 !important;
     }}
-
-    /* Selectively hide GitHub buttons, Fork icons, and 3-dots menus */
     [data-testid="stToolbarActions"],
     header a[href*="github.com"],
     header .stDeployButton,
@@ -140,8 +195,6 @@ st.markdown(f"""
         display: none !important;
         visibility: hidden !important;
     }}
-
-    /* Hide footer and viewer badges */
     footer,
     div[class*="viewerBadge"],
     div[data-testid="stStatusWidget"],
@@ -149,12 +202,10 @@ st.markdown(f"""
         display: none !important;
         visibility: hidden !important;
     }}
-
     section[data-testid="stSidebar"] {{
         background-color: #0b0c10 !important;
         border-right: 1px solid {theme_conf["border"]} !important;
     }}
-    
     section[data-testid="stSidebar"] button {{
         color: #f8fafc !important;
         background-color: #1a1e29 !important;
@@ -167,12 +218,6 @@ st.markdown(f"""
         border-color: #6366f1 !important;
         color: #ffffff !important;
     }}
-    section[data-testid="stSidebar"] button p {{
-        color: #f8fafc !important;
-        font-size: 0.95rem !important;
-        font-weight: 500 !important;
-    }}
-
     div[data-testid="stChatInput"] {{
         max-width: 820px !important;
         margin: 0 auto !important;
@@ -205,7 +250,7 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- SIDEBAR (PERSONAL TO EACH USER) -----------------
+# ----------------- SIDEBAR -----------------
 with st.sidebar:
     st.markdown("### ✨ **Nexus AI**")
 
@@ -217,6 +262,7 @@ with st.sidebar:
         st.session_state.current_session = new_id
         st.session_state.doc_context = ""
         st.session_state.uploaded_file_name = None
+        save_user_data()
         st.rerun()
 
     st.markdown("---")
@@ -259,8 +305,8 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Persistent personal chats list (Only visible in this user's browser)
-    search_query = st.text_input("🔍 Search your chats...", placeholder="Type keywords...").lower()
+    # Persistent personal chats list
+    search_query = st.text_input("🔍 Search chats...", placeholder="Type keywords...").lower()
 
     def render_chat_row(s_name, is_pinned=False):
         c1, c2, c3, c4 = st.columns([0.55, 0.15, 0.15, 0.15])
@@ -275,6 +321,7 @@ with st.sidebar:
                 st.session_state.pinned_chats.discard(s_name)
             else:
                 st.session_state.pinned_chats.add(s_name)
+            save_user_data()
             st.rerun()
 
         if c3.button("✏️", key=f"ren_{s_name}", help="Rename chat"):
@@ -284,6 +331,7 @@ with st.sidebar:
             st.session_state.pinned_chats.discard(s_name)
             del st.session_state.sessions[s_name]
             st.session_state.current_session = list(st.session_state.sessions.keys())[0]
+            save_user_data()
             st.rerun()
 
     if st.session_state.rename_target:
@@ -301,6 +349,7 @@ with st.sidebar:
                 if st.session_state.current_session == target:
                     st.session_state.current_session = clean_name
             st.session_state.rename_target = None
+            save_user_data()
             st.rerun()
         if col_r2.button("Cancel", use_container_width=True):
             st.session_state.rename_target = None
@@ -319,28 +368,17 @@ with st.sidebar:
     for s_name in recents_visible:
         render_chat_row(s_name, is_pinned=False)
 
-    st.markdown("---")
-    cur_chat = st.session_state.sessions.get(st.session_state.current_session, [])
-    export_text = "\n\n".join([f"**{m['role'].upper()}**: {m['content']}" for m in cur_chat])
-    st.download_button(
-        label="💾 Export Current Chat (.md)",
-        data=export_text,
-        file_name=f"{st.session_state.current_session}.md",
-        mime="text/markdown",
-        use_container_width=True
-    )
-
 # Header
 st.markdown("<div class='hero-title'>Nexus AI Studio ✨</div>", unsafe_allow_html=True)
 st.markdown(f"<div class='hero-subtitle'>Mode: <b>{app_mode}</b></div>", unsafe_allow_html=True)
 
 # ==========================================
-# PAGE 1: 🖼️ ART GALLERY (USER'S OWN IMAGES)
+# PAGE 1: 🖼️ ART GALLERY
 # ==========================================
 if app_mode == "🖼️ Art Gallery":
     st.markdown("### 🖼️ **Personal Visual Showcase**")
     if not st.session_state.image_history:
-        st.info("You haven't generated any images in this session yet! Switch to '🎨 Image Generator' to create artwork.")
+        st.info("You haven't created any artwork yet! Switch to '🎨 Image Generator' to create some.")
     else:
         cols = st.columns(3)
         for idx, img_item in enumerate(reversed(st.session_state.image_history)):
@@ -367,7 +405,7 @@ elif app_mode == "🎨 Image Generator":
         st.markdown(
             """
             <div style="text-align: center; padding: 40px; color: #888; border: 1px dashed #333; border-radius: 12px; margin: 20px 0;">
-                No artwork generated yet in this session. Type your visual description below!
+                No artwork generated yet. Type your visual description below!
             </div>
             """,
             unsafe_allow_html=True
@@ -418,6 +456,7 @@ elif app_mode == "🎨 Image Generator":
                             "bytes": clean_bytes,
                             "caption": prompt
                         })
+                        save_user_data()
                         st.rerun()
                     else:
                         st.error("Image server busy. Please send your prompt again.")
@@ -516,7 +555,6 @@ else:
 
                     for m in AVAILABLE_MODELS:
                         try:
-                            # Natural, direct prompt with zero forced persona wrappers
                             res = client.models.generate_content(
                                 model=m,
                                 contents=prompt,
@@ -531,5 +569,6 @@ else:
                     if generated_text:
                         placeholder_box.markdown(generated_text)
                         active_msgs.append({"role": "assistant", "content": generated_text})
+                        save_user_data()
                     else:
                         placeholder_box.error(f"Could not reach models. Details: {' | '.join(error_logs[:2])}")
