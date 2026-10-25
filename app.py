@@ -1,6 +1,5 @@
 import base64
 import io
-import json
 import os
 import random
 import time
@@ -22,73 +21,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- LOCAL PERSISTENCE HELPERS -----------------
-HISTORY_FILE = "chat_history.json"
-
-def get_default_sessions():
-    return {
-        "New Conversation": [
-            {"role": "assistant", "type": "text", "content": "Welcome to Nexus AI Studio. What would you like to explore or create today?"}
-        ]
-    }
-
-def load_all_sessions():
-    """Loads chats and pinned statuses safely from local disk."""
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                sessions = data.get("sessions", {})
-                pinned = data.get("pinned", [])
-                
-                if isinstance(sessions, dict) and len(sessions) > 0:
-                    for s_name, messages in sessions.items():
-                        for msg in messages:
-                            if msg.get("type") == "image" and "b64" in msg:
-                                raw_bytes = base64.b64decode(msg["b64"])
-                                msg["content"] = Image.open(io.BytesIO(raw_bytes))
-                                msg["bytes"] = raw_bytes
-                    return sessions, pinned
-        except Exception:
-            pass
-    return get_default_sessions(), []
-
-def save_all_sessions():
-    """Saves entire conversation and pinned status to JSON."""
-    if not hasattr(st.session_state, "sessions") or not st.session_state.sessions:
-        return
-
-    to_save = {}
-    for session_name, messages in st.session_state.sessions.items():
-        saved_msgs = []
-        for msg in messages:
-            if msg.get("type") == "image":
-                b64_str = base64.b64encode(msg["bytes"]).decode("utf-8") if "bytes" in msg else ""
-                saved_msgs.append({
-                    "role": msg["role"],
-                    "type": "image",
-                    "caption": msg.get("caption", ""),
-                    "b64": b64_str
-                })
-            else:
-                saved_msgs.append({
-                    "role": msg["role"],
-                    "type": "text",
-                    "content": msg.get("content", "")
-                })
-        to_save[session_name] = saved_msgs
-
-    payload = {
-        "sessions": to_save,
-        "pinned": list(getattr(st.session_state, "pinned_chats", []))
-    }
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-
 # ----------------- CREDENTIALS & CLIENT -----------------
 load_dotenv()
 
-# Checks Streamlit Cloud Secrets first, then falls back to local environment variables
+# Prioritize Streamlit Cloud Secrets, fallback to local .env
 api_key = None
 if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
     api_key = st.secrets["GEMINI_API_KEY"]
@@ -102,17 +38,20 @@ if not api_key:
 client = genai.Client(api_key=api_key)
 MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
 
-# Safe State Initialization
-if "sessions" not in st.session_state or not st.session_state.sessions:
-    loaded_sessions, loaded_pinned = load_all_sessions()
-    if not loaded_sessions:
-        loaded_sessions = get_default_sessions()
-    st.session_state.sessions = loaded_sessions
-    st.session_state.pinned_chats = set(loaded_pinned)
+# ----------------- ISOLATED USER SESSION STATE -----------------
+# All storage exists strictly in this browser session's RAM (zero shared disk access)
+if "sessions" not in st.session_state:
+    st.session_state.sessions = {
+        "New Conversation": [
+            {"role": "assistant", "type": "text", "content": "Welcome to Nexus AI Studio. What would you like to explore or create today?"}
+        ]
+    }
+
+if "pinned_chats" not in st.session_state:
+    st.session_state.pinned_chats = set()
 
 if "current_session" not in st.session_state or st.session_state.current_session not in st.session_state.sessions:
-    valid_keys = list(st.session_state.sessions.keys())
-    st.session_state.current_session = valid_keys[0] if valid_keys else "New Conversation"
+    st.session_state.current_session = list(st.session_state.sessions.keys())[0]
 
 if "doc_context" not in st.session_state:
     st.session_state.doc_context = ""
@@ -153,22 +92,20 @@ THEMES = {
 
 theme_conf = THEMES[st.session_state.active_theme]
 
-# CSS styling for interface, visible sidebar control, and removed Streamlit branding
+# UI CSS: Keeps navigation arrow visible, eliminates branding, protects layout
 st.markdown(f"""
 <style>
-    /* Full App Canvas */
     .stApp {{
         background: {theme_conf["bg"]};
         color: #f1f5f9;
     }}
     
-    /* Keep header active so sidebar button functions */
     header[data-testid="stHeader"] {{
         background: transparent !important;
         display: block !important;
     }}
 
-    /* Keep the left sidebar button (>>) visible and functional */
+    /* Sidebar toggle button always accessible */
     [data-testid="collapsedControl"],
     [data-testid="collapsedControl"] button,
     button[data-testid="baseButton-headerNoPadding"] {{
@@ -178,7 +115,7 @@ st.markdown(f"""
         z-index: 999999 !important;
     }}
 
-    /* Selectively hide ONLY right-side tools: GitHub link, Fork button, 3-dots menu */
+    /* Hide right-hand toolbar, GitHub source button, and 3-dots menu */
     [data-testid="stToolbarActions"],
     header a[href*="github.com"],
     header .stDeployButton,
@@ -189,7 +126,7 @@ st.markdown(f"""
         visibility: hidden !important;
     }}
 
-    /* Hide Streamlit bottom footer and floating viewer badges */
+    /* Hide footer and viewer counter badges */
     footer {{
         display: none !important;
         visibility: hidden !important;
@@ -206,7 +143,6 @@ st.markdown(f"""
         border-right: 1px solid {theme_conf["border"]} !important;
     }}
     
-    /* Sidebar button styling */
     section[data-testid="stSidebar"] button {{
         color: #f8fafc !important;
         background-color: #1a1e29 !important;
@@ -269,7 +205,6 @@ with st.sidebar:
         st.session_state.current_session = new_id
         st.session_state.doc_context = ""
         st.session_state.uploaded_file_name = None
-        save_all_sessions()
         st.rerun()
 
     st.markdown("---")
@@ -321,7 +256,6 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Search Bar
     search_query = st.text_input("🔍 Search chats...", placeholder="Type keywords...").lower()
 
     def render_chat_row(s_name, is_pinned=False):
@@ -337,7 +271,6 @@ with st.sidebar:
                 st.session_state.pinned_chats.discard(s_name)
             else:
                 st.session_state.pinned_chats.add(s_name)
-            save_all_sessions()
             st.rerun()
 
         if c3.button("✏️", key=f"ren_{s_name}", help="Rename chat"):
@@ -347,10 +280,8 @@ with st.sidebar:
             st.session_state.pinned_chats.discard(s_name)
             del st.session_state.sessions[s_name]
             st.session_state.current_session = list(st.session_state.sessions.keys())[0]
-            save_all_sessions()
             st.rerun()
 
-    # Inline Rename Box
     if st.session_state.rename_target:
         st.markdown(f"**Rename: `{st.session_state.rename_target}`**")
         new_name = st.text_input("New Title", value=st.session_state.rename_target, key="rename_input")
@@ -365,7 +296,6 @@ with st.sidebar:
                     st.session_state.pinned_chats.add(clean_name)
                 if st.session_state.current_session == target:
                     st.session_state.current_session = clean_name
-                save_all_sessions()
             st.session_state.rename_target = None
             st.rerun()
         if col_r2.button("Cancel", use_container_width=True):
@@ -413,7 +343,7 @@ if app_mode == "🖼️ Art Gallery":
                 all_images.append(m)
 
     if not all_images:
-        st.info("No generated images yet! Switch to '🎨 Image Generator' mode and create some artwork.")
+        st.info("No generated images yet! Switch to '🎨 Image Generator' mode and create artwork.")
     else:
         cols = st.columns(3)
         for idx, img_item in enumerate(all_images):
@@ -455,7 +385,6 @@ for idx, msg in enumerate(active_msgs):
                     except Exception:
                         st.warning("TTS audio generation requires an active network.")
 
-# Dynamic input placeholders
 if app_mode == "💬 Chat Assistant":
     placeholder = "Ask any technical question or discuss ideas..."
 elif app_mode == "📄 Document Q&A (RAG)":
@@ -476,39 +405,40 @@ if prompt := st.chat_input(placeholder):
         active_msgs = st.session_state.sessions[new_title]
 
     active_msgs.append({"role": "user", "type": "text", "content": prompt})
-    save_all_sessions()
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # 1. Image Mode
+    # 1. Image Mode (No Watermark + Adaptive Stylization)
     if app_mode == "🎨 Image Generator":
         with st.chat_message("assistant"):
-            with st.spinner("Generating clean artwork with Flux Engine..."):
+            with st.spinner("Generating artwork..."):
                 try:
                     base_prompt = prompt.strip()
-                    stylized = ["cartoon", "anime", "chibi", "illustration", "painting", "render", "figurine", "3d", "tinytan"]
-                    if not any(k in base_prompt.lower() for k in stylized):
-                        enhanced_prompt = f"{base_prompt}, high detail, 4k, studio lighting"
-                    else:
-                        enhanced_prompt = f"{base_prompt}, masterpiece, 3D blender render, vinyl toy texture"
+                    stylized = ["chibi", "tinytan", "figurine", "3d", "anime", "cartoon", "render"]
                     
+                    if any(k in base_prompt.lower() for k in stylized):
+                        enhanced_prompt = f"{base_prompt}, collectible 3D figurine, smooth clay material, studio lighting, centered composition"
+                    else:
+                        enhanced_prompt = f"{base_prompt}, 4k resolution, clean lighting, sharp focus"
+
                     encoded_prompt = urllib.parse.quote(enhanced_prompt)
                     random_seed = random.randint(1000, 999999)
-                    
-                    # Request 1024x1070 so the watermark renders in the extra bottom 46px margin
-                    image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1070&model=flux&seed={random_seed}&nologo=true"
-                    
-                    response = requests.get(image_url, timeout=40)
+
+                    # Fetch at 1024x1150 so we can cut the 126px bottom banner off completely
+                    image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1150&model=flux&seed={random_seed}&nologo=true"
+
+                    response = requests.get(image_url, timeout=45)
                     if response.status_code == 200:
                         raw_img = Image.open(io.BytesIO(response.content))
-                        
-                        # Slice off the bottom watermark band, producing a clean 1024x1024 square
-                        clean_img = raw_img.crop((0, 0, 1024, 1024))
-                        
+                        w, h = raw_img.size
+
+                        # Crop out the entire bottom watermark
+                        clean_img = raw_img.crop((0, 0, w, h - 126))
+
                         buf = io.BytesIO()
                         clean_img.save(buf, format="PNG")
                         clean_bytes = buf.getvalue()
-                        
+
                         st.image(clean_img, caption=prompt, use_container_width=True)
                         active_msgs.append({
                             "role": "assistant",
@@ -517,10 +447,9 @@ if prompt := st.chat_input(placeholder):
                             "bytes": clean_bytes,
                             "caption": prompt
                         })
-                        save_all_sessions()
                         st.rerun()
                     else:
-                        st.error("Image server busy. Please submit your prompt once more.")
+                        st.error("Image generation server busy. Please submit your prompt again.")
                 except Exception as e:
                     st.error(f"Image error: {str(e)}")
 
@@ -531,7 +460,6 @@ if prompt := st.chat_input(placeholder):
                 warning_text = "Please upload a PDF or TXT file using the sidebar first so I have data to reference!"
                 st.warning(warning_text)
                 active_msgs.append({"role": "assistant", "type": "text", "content": warning_text})
-                save_all_sessions()
         else:
             rag_prompt = (
                 f"You are an expert document analysis assistant. Answer the user's question accurately and strictly based on the following document content.\n\n"
@@ -555,7 +483,6 @@ if prompt := st.chat_input(placeholder):
                 if response_text:
                     st.markdown(response_text)
                     active_msgs.append({"role": "assistant", "type": "text", "content": response_text})
-                    save_all_sessions()
                 else:
                     st.error("Server is busy. Please resend your message.")
 
@@ -563,7 +490,7 @@ if prompt := st.chat_input(placeholder):
     else:
         persona_prompts = {
             "Code Mentor": "You are an elite software architect. Provide clean, production-grade code, clear explanations, and modern best practices.",
-            "Concise Pro": "Deliver high-impact, direct bullet points with zero unnecessary conversational fluff.",
+            "Concise Pro": "Deliver high-impact, direct bullet points with zero conversational fluff.",
             "Creative Explainer": "Break down complex topics into vivid real-world analogies and engaging storytelling.",
             "Research Analyst": "Provide structured, rigorous, and deeply technical evaluations with key trade-offs."
         }
@@ -587,6 +514,5 @@ if prompt := st.chat_input(placeholder):
             if response_text:
                 st.markdown(response_text)
                 active_msgs.append({"role": "assistant", "type": "text", "content": response_text})
-                save_all_sessions()
             else:
                 st.error("Server is busy. Please resend your message.")
