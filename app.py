@@ -30,17 +30,24 @@ else:
     api_key = os.getenv("GEMINI_API_KEY")
 
 client = None
+AVAILABLE_MODELS = []
+
 if api_key:
     try:
         clean_key = str(api_key).strip().strip("'\"")
         client = genai.Client(api_key=clean_key)
+        
+        # Dynamically inspect models available to this specific key
+        for m in client.models.list():
+            m_name = m.name.replace("models/", "")
+            if "flash" in m_name or "gemini" in m_name:
+                AVAILABLE_MODELS.append(m_name)
     except Exception as e:
-        st.error(f"Error initializing Gemini client: {e}")
-else:
-    st.error("Missing Gemini API key. Please add GEMINI_API_KEY in Streamlit Settings ➔ Secrets.")
+        st.error(f"Error connecting to Gemini: {e}")
 
-# Models that work with your key
-MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
+# Fallback sequence if listing is restricted
+if not AVAILABLE_MODELS:
+    AVAILABLE_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
 
 # ----------------- ISOLATED USER SESSION STATE -----------------
 if "sessions" not in st.session_state:
@@ -389,7 +396,7 @@ if prompt := st.chat_input(placeholder):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # 1. Fast, Reliable Image Generator (Turbo + Auto Watermark Cropping)
+    # 1. Image Mode (Turbo + Watermark Cropping)
     if app_mode == "🎨 Image Generator":
         with st.chat_message("assistant"):
             with st.spinner("Generating artwork..."):
@@ -398,15 +405,14 @@ if prompt := st.chat_input(placeholder):
                     encoded_prompt = urllib.parse.quote(clean_p)
                     random_seed = random.randint(1000, 999999)
 
-                    # 768x860 generation: lightweight and fast (under 4 seconds)
+                    # 768x860 generation to safely crop out the bottom 92px watermark
                     image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=768&height=860&model=turbo&seed={random_seed}&nologo=true"
 
-                    response = requests.get(image_url, timeout=20)
+                    response = requests.get(image_url, timeout=25)
                     if response.status_code == 200:
                         raw_img = Image.open(io.BytesIO(response.content))
                         w, h = raw_img.size
 
-                        # Crop out bottom watermark margin
                         clean_img = raw_img.crop((0, 0, w, h - 92))
 
                         buf = io.BytesIO()
@@ -444,27 +450,33 @@ if prompt := st.chat_input(placeholder):
             )
             with st.chat_message("assistant"):
                 placeholder_box = st.empty()
-                full_res = ""
-                for m in MODELS:
-                    try:
-                        res = client.models.generate_content_stream(model=m, contents=rag_prompt)
-                        for chunk in res:
-                            if chunk.text:
-                                full_res += chunk.text
-                                placeholder_box.markdown(full_res + "▌")
-                        placeholder_box.markdown(full_res)
-                        active_msgs.append({"role": "assistant", "type": "text", "content": full_res})
-                        break
-                    except Exception:
-                        continue
+                with st.spinner("Reading document..."):
+                    generated_text = ""
+                    for m in AVAILABLE_MODELS:
+                        try:
+                            res = client.models.generate_content(
+                                model=m,
+                                contents=rag_prompt,
+                            )
+                            if res and res.text:
+                                generated_text = res.text
+                                break
+                        except Exception:
+                            continue
 
-    # 3. Chat Assistant (Immediate Token Streaming, Google-style Persona, Accurate Error Reporting)
+                    if generated_text:
+                        placeholder_box.markdown(generated_text)
+                        active_msgs.append({"role": "assistant", "type": "text", "content": generated_text})
+                    else:
+                        placeholder_box.error("Unable to answer from the document. Please try again.")
+
+    # 3. Chat Assistant (Natural Google-style Answers, Reliable Multi-Model Handling)
     else:
         if not client:
             st.error("Gemini API key is not ready. Please verify GEMINI_API_KEY in Secrets.")
         else:
             persona_prompts = {
-                "Smart Assistant (Google style)": "You are a helpful, knowledgeable, clear, and friendly AI assistant. Answer questions directly, naturally, and accurately, just like Google.",
+                "Smart Assistant (Google style)": "You are a helpful, knowledgeable, and clear AI assistant. Answer questions directly, naturally, and accurately, just like Google.",
                 "Code Mentor": "You are an elite software architect. Provide clean code and best practices.",
                 "Concise Pro": "Deliver concise bullet points with zero unnecessary words.",
                 "Creative Explainer": "Break down topics using vivid real-world analogies."
@@ -474,27 +486,25 @@ if prompt := st.chat_input(placeholder):
 
             with st.chat_message("assistant"):
                 placeholder_box = st.empty()
-                full_res = ""
-                success = False
-                last_error = ""
+                with st.spinner("Thinking..."):
+                    generated_text = ""
+                    error_logs = []
 
-                for m in MODELS:
-                    try:
-                        response_stream = client.models.generate_content_stream(
-                            model=m,
-                            contents=full_prompt,
-                        )
-                        for chunk in response_stream:
-                            if chunk.text:
-                                full_res += chunk.text
-                                placeholder_box.markdown(full_res + "▌")
-                        placeholder_box.markdown(full_res)
-                        active_msgs.append({"role": "assistant", "type": "text", "content": full_res})
-                        success = True
-                        break
-                    except Exception as err:
-                        last_error = f"{m}: {str(err)}"
-                        continue
+                    for m in AVAILABLE_MODELS:
+                        try:
+                            res = client.models.generate_content(
+                                model=m,
+                                contents=full_prompt,
+                            )
+                            if res and res.text:
+                                generated_text = res.text
+                                break
+                        except Exception as err:
+                            error_logs.append(f"{m}: {str(err)}")
+                            continue
 
-                if not success:
-                    placeholder_box.error(f"Generation error ({last_error})")
+                    if generated_text:
+                        placeholder_box.markdown(generated_text)
+                        active_msgs.append({"role": "assistant", "type": "text", "content": generated_text})
+                    else:
+                        placeholder_box.error(f"Could not reach models. Details: {' | '.join(error_logs[:2])}")
