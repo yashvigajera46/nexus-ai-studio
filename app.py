@@ -1,4 +1,3 @@
-import base64
 import io
 import os
 import random
@@ -24,7 +23,6 @@ st.set_page_config(
 # ----------------- CREDENTIALS & CLIENT -----------------
 load_dotenv()
 
-# Streamlit Cloud secrets take priority; fallback to local environment
 api_key = None
 if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
     api_key = st.secrets["GEMINI_API_KEY"]
@@ -41,8 +39,8 @@ if api_key:
 else:
     st.error("Missing Gemini API key. Please add GEMINI_API_KEY in Streamlit Settings ➔ Secrets.")
 
-# Fallback sequence to handle 503 traffic spikes
-MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
+# Fast, stable Gemini models
+MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
 
 # ----------------- ISOLATED USER SESSION STATE -----------------
 if "sessions" not in st.session_state:
@@ -97,7 +95,7 @@ THEMES = {
 
 theme_conf = THEMES[st.session_state.active_theme]
 
-# CSS styling for custom clean interface and stealth mode
+# UI styling
 st.markdown(f"""
 <style>
     .stApp {{
@@ -110,7 +108,6 @@ st.markdown(f"""
         display: block !important;
     }}
 
-    /* Keep the left sidebar toggle arrow visible and clickable */
     [data-testid="collapsedControl"],
     [data-testid="collapsedControl"] button,
     button[data-testid="baseButton-headerNoPadding"] {{
@@ -120,7 +117,6 @@ st.markdown(f"""
         z-index: 999999 !important;
     }}
 
-    /* Selectively hide GitHub buttons, Fork icons, and 3-dots menus */
     [data-testid="stToolbarActions"],
     header a[href*="github.com"],
     header .stDeployButton,
@@ -131,7 +127,6 @@ st.markdown(f"""
         visibility: hidden !important;
     }}
 
-    /* Hide footer and viewer badges */
     footer,
     div[class*="viewerBadge"],
     div[data-testid="stStatusWidget"],
@@ -217,11 +212,12 @@ with st.sidebar:
         index=0
     )
 
-    bot_persona = "Code Mentor"
+    # General AI assistant as the default persona
+    bot_persona = "Smart Assistant (Google style)"
     if app_mode == "💬 Chat Assistant":
         bot_persona = st.selectbox(
             "Persona:",
-            ["Code Mentor", "Concise Pro", "Creative Explainer", "Research Analyst"],
+            ["Smart Assistant (Google style)", "Code Mentor", "Concise Pro", "Creative Explainer"],
             index=0
         )
 
@@ -245,7 +241,6 @@ with st.sidebar:
                 st.success(f"Loaded: {uploaded_doc.name}")
 
     with st.expander("⚙️ Advanced Parameters"):
-        temperature = st.slider("Temperature", 0.0, 1.0, 0.7, 0.05)
         enable_tts = st.checkbox("Enable Voice Audio (TTS)", value=False)
         selected_theme = st.selectbox(
             "UI Accent Palette:",
@@ -317,17 +312,6 @@ with st.sidebar:
     for s_name in recents_visible:
         render_chat_row(s_name, is_pinned=False)
 
-    st.markdown("---")
-    cur_chat = st.session_state.sessions.get(st.session_state.current_session, [])
-    export_text = "\n\n".join([f"**{m['role'].upper()}**: {m['content']}" for m in cur_chat if m.get("type") == "text"])
-    st.download_button(
-        label="💾 Export Chat (.md)",
-        data=export_text,
-        file_name=f"{st.session_state.current_session}.md",
-        mime="text/markdown",
-        use_container_width=True
-    )
-
 # Header
 st.markdown("<div class='hero-title'>Nexus AI Studio ✨</div>", unsafe_allow_html=True)
 st.markdown(
@@ -338,14 +322,10 @@ st.markdown(
 # ----------------- ART GALLERY VIEW -----------------
 if app_mode == "🖼️ Art Gallery":
     st.markdown("### 🖼️ **Generated Visual Assets**")
-    all_images = []
-    for s_name, msgs in st.session_state.sessions.items():
-        for m in msgs:
-            if m.get("type") == "image":
-                all_images.append(m)
+    all_images = [m for s in st.session_state.sessions.values() for m in s if m.get("type") == "image"]
 
     if not all_images:
-        st.info("No generated images yet in this session! Switch to '🎨 Image Generator' mode and create artwork.")
+        st.info("No generated images yet in this session! Switch to '🎨 Image Generator' mode to make some.")
     else:
         cols = st.columns(3)
         for idx, img_item in enumerate(all_images):
@@ -369,7 +349,7 @@ for idx, msg in enumerate(active_msgs):
             st.image(msg["content"], caption=msg.get("caption", "Generated Artwork"), use_container_width=True)
             if "bytes" in msg:
                 st.download_button(
-                    label="📥 Download High-Res Image",
+                    label="📥 Download Image",
                     data=msg["bytes"],
                     file_name="nexus_artwork.png",
                     mime="image/png",
@@ -385,12 +365,12 @@ for idx, msg in enumerate(active_msgs):
                         tts.write_to_fp(audio_buffer)
                         st.audio(audio_buffer.getvalue(), format="audio/mp3", autoplay=True)
                     except Exception:
-                        st.warning("TTS audio generation requires an active network.")
+                        pass
 
 if app_mode == "💬 Chat Assistant":
-    placeholder = "Ask any technical question or discuss ideas..."
+    placeholder = "Ask anything..."
 elif app_mode == "📄 Document Q&A (RAG)":
-    placeholder = f"Ask questions about '{st.session_state.uploaded_file_name}'..." if st.session_state.uploaded_file_name else "Please upload a document in the sidebar first..."
+    placeholder = f"Ask questions about '{st.session_state.uploaded_file_name}'..." if st.session_state.uploaded_file_name else "Please upload a document first..."
 else:
     placeholder = "Describe the image you want to create..."
 
@@ -410,30 +390,25 @@ if prompt := st.chat_input(placeholder):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # 1. Image Mode: Fast turbo engine + 126px margin crop
+    # 1. Fast, Reliable Image Generator (Turbo + Auto Watermark Cropping)
     if app_mode == "🎨 Image Generator":
         with st.chat_message("assistant"):
             with st.spinner("Generating artwork..."):
                 try:
-                    base_prompt = prompt.strip()
-                    stylized = ["chibi", "tinytan", "figurine", "3d", "anime", "cartoon", "render"]
-                    
-                    if any(k in base_prompt.lower() for k in stylized):
-                        enhanced_prompt = f"{base_prompt}, collectible 3D figurine, smooth vinyl clay, clean studio lighting, centered"
-                    else:
-                        enhanced_prompt = f"{base_prompt}, high resolution, studio photography, sharp focus"
-
-                    encoded_prompt = urllib.parse.quote(enhanced_prompt)
+                    clean_p = prompt.strip()
+                    encoded_prompt = urllib.parse.quote(clean_p)
                     random_seed = random.randint(1000, 999999)
 
-                    image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1150&model=turbo&seed={random_seed}&nologo=true"
+                    # 768x860 generation: lightweight and fast (under 4 seconds)
+                    image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=768&height=860&model=turbo&seed={random_seed}&nologo=true"
 
-                    response = requests.get(image_url, timeout=30)
+                    response = requests.get(image_url, timeout=20)
                     if response.status_code == 200:
                         raw_img = Image.open(io.BytesIO(response.content))
                         w, h = raw_img.size
 
-                        clean_img = raw_img.crop((0, 0, w, h - 126))
+                        # Crop out bottom watermark margin
+                        clean_img = raw_img.crop((0, 0, w, h - 92))
 
                         buf = io.BytesIO()
                         clean_img.save(buf, format="PNG")
@@ -449,9 +424,9 @@ if prompt := st.chat_input(placeholder):
                         })
                         st.rerun()
                     else:
-                        st.error("Image server busy. Please submit your prompt again.")
+                        st.error("Image server busy. Please send your prompt again.")
                 except requests.exceptions.Timeout:
-                    st.error("The free image server took too long. Please try again.")
+                    st.error("Image server timed out. Please try once more.")
                 except Exception as e:
                     st.error(f"Image error: {str(e)}")
 
@@ -459,79 +434,67 @@ if prompt := st.chat_input(placeholder):
     elif app_mode == "📄 Document Q&A (RAG)":
         if not st.session_state.doc_context:
             with st.chat_message("assistant"):
-                warning_text = "Please upload a PDF or TXT file using the sidebar first so I have data to reference!"
-                st.warning(warning_text)
-                active_msgs.append({"role": "assistant", "type": "text", "content": warning_text})
+                st.warning("Please upload a PDF or TXT file using the sidebar first!")
         elif not client:
-            st.error("Gemini client is not initialized. Please verify your GEMINI_API_KEY.")
+            st.error("Gemini API key is not ready.")
         else:
             rag_prompt = (
-                f"You are an expert document analysis assistant. Answer the user's question accurately and strictly based on the following document content.\n\n"
+                f"Answer the user's question accurately using only the following document content.\n\n"
                 f"--- DOCUMENT CONTENT ---\n{st.session_state.doc_context}\n--- END DOCUMENT ---\n\n"
-                f"User Question: {prompt}"
+                f"Question: {prompt}"
             )
-            response_text = ""
             with st.chat_message("assistant"):
-                with st.spinner("Analyzing document context..."):
-                    for m in MODELS:
-                        for attempt in range(2):
-                            try:
-                                res = client.models.generate_content(
-                                    model=m,
-                                    contents=rag_prompt,
-                                )
-                                response_text = res.text
-                                break
-                            except Exception as err:
-                                if "503" in str(err) and attempt == 0:
-                                    time.sleep(1.5)
-                                    continue
-                                break
-                        if response_text:
-                            break
+                placeholder_box = st.empty()
+                full_res = ""
+                for m in MODELS:
+                    try:
+                        res = client.models.generate_content_stream(model=m, contents=rag_prompt)
+                        for chunk in res:
+                            if chunk.text:
+                                full_res += chunk.text
+                                placeholder_box.markdown(full_res + "▌")
+                        placeholder_box.markdown(full_res)
+                        active_msgs.append({"role": "assistant", "type": "text", "content": full_res})
+                        break
+                    except Exception:
+                        continue
 
-                if response_text:
-                    st.markdown(response_text)
-                    active_msgs.append({"role": "assistant", "type": "text", "content": response_text})
-                else:
-                    st.error("Servers are experiencing temporary peak demand. Please resend your prompt.")
-
-    # 3. Chat Assistant
+    # 3. Chat Assistant (Immediate Token Streaming, Google-style Persona)
     else:
         if not client:
-            st.error("Gemini client is not initialized. Please verify your GEMINI_API_KEY.")
+            st.error("Gemini API key is not ready.")
         else:
             persona_prompts = {
-                "Code Mentor": "You are an elite software architect. Provide clean, production-grade code, clear explanations, and modern best practices.",
-                "Concise Pro": "Deliver high-impact, direct bullet points with zero conversational fluff.",
-                "Creative Explainer": "Break down complex topics into vivid real-world analogies and engaging storytelling.",
-                "Research Analyst": "Provide structured, rigorous, and deeply technical evaluations with key trade-offs."
+                "Smart Assistant (Google style)": "You are a helpful, knowledgeable, clear, and friendly AI assistant. Answer questions directly, naturally, and accurately, just like Google.",
+                "Code Mentor": "You are an elite software architect. Provide clean code and best practices.",
+                "Concise Pro": "Deliver concise bullet points with zero unnecessary words.",
+                "Creative Explainer": "Break down topics using vivid real-world analogies."
             }
             system_instruction = persona_prompts[bot_persona]
-            full_prompt = f"System Instruction: {system_instruction}\n\nUser Question: {prompt}"
+            full_prompt = f"{system_instruction}\n\nUser Question: {prompt}"
 
-            response_text = ""
             with st.chat_message("assistant"):
-                with st.spinner("Thinking..."):
-                    for m in MODELS:
-                        for attempt in range(2):
-                            try:
-                                res = client.models.generate_content(
-                                    model=m,
-                                    contents=full_prompt,
-                                )
-                                response_text = res.text
-                                break
-                            except Exception as err:
-                                if "503" in str(err) and attempt == 0:
-                                    time.sleep(1.5)
-                                    continue
-                                break
-                        if response_text:
-                            break
+                placeholder_box = st.empty()
+                full_res = ""
+                success = False
 
-                if response_text:
-                    st.markdown(response_text)
-                    active_msgs.append({"role": "assistant", "type": "text", "content": response_text})
-                else:
-                    st.error("Servers are experiencing temporary peak demand. Please resend your prompt.")
+                for m in MODELS:
+                    try:
+                        # Stream tokens in real-time as they generate
+                        response_stream = client.models.generate_content_stream(
+                            model=m,
+                            contents=full_prompt,
+                        )
+                        for chunk in response_stream:
+                            if chunk.text:
+                                full_res += chunk.text
+                                placeholder_box.markdown(full_res + "▌")
+                        placeholder_box.markdown(full_res)
+                        active_msgs.append({"role": "assistant", "type": "text", "content": full_res})
+                        success = True
+                        break
+                    except Exception:
+                        continue
+
+                if not success:
+                    placeholder_box.error("Google Gemini is experiencing momentary demand spikes. Please try resending.")
