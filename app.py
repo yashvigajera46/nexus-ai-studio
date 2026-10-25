@@ -153,13 +153,48 @@ THEMES = {
 
 theme_conf = THEMES[st.session_state.active_theme]
 
-# CSS styling for interface and button contrast
+# CSS styling for interface, button contrast, and removing Streamlit branding
 st.markdown(f"""
 <style>
+    /* Full App Canvas */
     .stApp {{
         background: {theme_conf["bg"]};
         color: #f1f5f9;
     }}
+    
+    /* Hide top header tools: Fork, GitHub icon, 3-dots menu, deploy button */
+    [data-testid="stToolbar"],
+    [data-testid="stToolbarActions"],
+    header a[href*="github.com"],
+    header .stDeployButton,
+    header button[title="View source on GitHub"] {{
+        display: none !important;
+        visibility: hidden !important;
+    }}
+
+    /* Make header bar clean and transparent */
+    header[data-testid="stHeader"] {{
+        background: transparent !important;
+    }}
+
+    /* Ensure mobile sidebar toggle arrow remains accessible */
+    [data-testid="collapsedControl"] {{
+        display: block !important;
+        visibility: visible !important;
+    }}
+
+    /* Hide Streamlit bottom footer and floating viewer badges */
+    footer {{
+        display: none !important;
+        visibility: hidden !important;
+    }}
+    div[class*="viewerBadge"],
+    div[data-testid="stStatusWidget"],
+    .viewerBadge_container__1QSob {{
+        display: none !important;
+        visibility: hidden !important;
+    }}
+
     section[data-testid="stSidebar"] {{
         background-color: #0b0c10 !important;
         border-right: 1px solid {theme_conf["border"]} !important;
