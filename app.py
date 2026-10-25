@@ -45,17 +45,21 @@ if api_key:
     except Exception as e:
         st.error(f"Error connecting to Gemini: {e}")
 
-# Fallback sequence if listing is restricted
 if not AVAILABLE_MODELS:
     AVAILABLE_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
 
-# ----------------- ISOLATED USER SESSION STATE -----------------
+# ----------------- SEPARATED SESSION STATES -----------------
+# 1. Text Conversations
 if "sessions" not in st.session_state:
     st.session_state.sessions = {
         "New Conversation": [
-            {"role": "assistant", "type": "text", "content": "Welcome to Nexus AI Studio. What would you like to explore or create today?"}
+            {"role": "assistant", "content": "Welcome to Nexus AI Studio. What would you like to explore or talk about today?"}
         ]
     }
+
+# 2. Dedicated Image History (Completely separated from text chat)
+if "image_history" not in st.session_state:
+    st.session_state.image_history = []
 
 if "pinned_chats" not in st.session_state:
     st.session_state.pinned_chats = set()
@@ -204,7 +208,7 @@ with st.sidebar:
     if st.button("✏️ New chat", use_container_width=True):
         new_id = f"Chat {len(st.session_state.sessions) + 1}"
         st.session_state.sessions[new_id] = [
-            {"role": "assistant", "type": "text", "content": "How can I assist you in this new session?"}
+            {"role": "assistant", "content": "How can I assist you in this new session?"}
         ]
         st.session_state.current_session = new_id
         st.session_state.doc_context = ""
@@ -215,7 +219,7 @@ with st.sidebar:
     
     app_mode = st.radio(
         "Mode:",
-        ["💬 Chat Assistant", "📄 Document Q&A (RAG)", "🎨 Image Generator", "🖼️ Art Gallery"],
+        ["💬 Chat Assistant", "🎨 Image Generator", "🖼️ Art Gallery", "📄 Document Q&A (RAG)"],
         index=0
     )
 
@@ -251,147 +255,133 @@ with st.sidebar:
 
     st.markdown("---")
 
-    search_query = st.text_input("🔍 Search chats...", placeholder="Type keywords...").lower()
+    # Chat Sessions list is only relevant when in Chat Assistant mode
+    if app_mode == "💬 Chat Assistant":
+        search_query = st.text_input("🔍 Search chats...", placeholder="Type keywords...").lower()
 
-    def render_chat_row(s_name, is_pinned=False):
-        c1, c2, c3, c4 = st.columns([0.55, 0.15, 0.15, 0.15])
-        label = s_name if len(s_name) <= 15 else s_name[:12] + "..."
-        if c1.button(label, key=f"btn_{s_name}", use_container_width=True, help=s_name):
-            st.session_state.current_session = s_name
-            st.rerun()
-        
-        pin_icon = "⭐" if is_pinned else "☆"
-        if c2.button(pin_icon, key=f"pin_{s_name}", help="Pin / Unpin chat"):
-            if is_pinned:
+        def render_chat_row(s_name, is_pinned=False):
+            c1, c2, c3, c4 = st.columns([0.55, 0.15, 0.15, 0.15])
+            label = s_name if len(s_name) <= 15 else s_name[:12] + "..."
+            if c1.button(label, key=f"btn_{s_name}", use_container_width=True, help=s_name):
+                st.session_state.current_session = s_name
+                st.rerun()
+            
+            pin_icon = "⭐" if is_pinned else "☆"
+            if c2.button(pin_icon, key=f"pin_{s_name}", help="Pin / Unpin chat"):
+                if is_pinned:
+                    st.session_state.pinned_chats.discard(s_name)
+                else:
+                    st.session_state.pinned_chats.add(s_name)
+                st.rerun()
+
+            if c3.button("✏️", key=f"ren_{s_name}", help="Rename chat"):
+                st.session_state.rename_target = s_name
+
+            if len(st.session_state.sessions) > 1 and c4.button("🗑️", key=f"del_{s_name}", help="Delete chat"):
                 st.session_state.pinned_chats.discard(s_name)
-            else:
-                st.session_state.pinned_chats.add(s_name)
-            st.rerun()
+                del st.session_state.sessions[s_name]
+                st.session_state.current_session = list(st.session_state.sessions.keys())[0]
+                st.rerun()
 
-        if c3.button("✏️", key=f"ren_{s_name}", help="Rename chat"):
-            st.session_state.rename_target = s_name
+        if st.session_state.rename_target:
+            st.markdown(f"**Rename: `{st.session_state.rename_target}`**")
+            new_name = st.text_input("New Title", value=st.session_state.rename_target, key="rename_input")
+            col_r1, col_r2 = st.columns(2)
+            if col_r1.button("Save", use_container_width=True) and new_name.strip():
+                target = st.session_state.rename_target
+                clean_name = new_name.strip()
+                if clean_name != target:
+                    st.session_state.sessions[clean_name] = st.session_state.sessions.pop(target)
+                    if target in st.session_state.pinned_chats:
+                        st.session_state.pinned_chats.remove(target)
+                        st.session_state.pinned_chats.add(clean_name)
+                    if st.session_state.current_session == target:
+                        st.session_state.current_session = clean_name
+                st.session_state.rename_target = None
+                st.rerun()
+            if col_r2.button("Cancel", use_container_width=True):
+                st.session_state.rename_target = None
+                st.rerun()
 
-        if len(st.session_state.sessions) > 1 and c4.button("🗑️", key=f"del_{s_name}", help="Delete chat"):
-            st.session_state.pinned_chats.discard(s_name)
-            del st.session_state.sessions[s_name]
-            st.session_state.current_session = list(st.session_state.sessions.keys())[0]
-            st.rerun()
+        all_chat_names = [s for s in st.session_state.sessions.keys() if search_query in s.lower()]
 
-    if st.session_state.rename_target:
-        st.markdown(f"**Rename: `{st.session_state.rename_target}`**")
-        new_name = st.text_input("New Title", value=st.session_state.rename_target, key="rename_input")
-        col_r1, col_r2 = st.columns(2)
-        if col_r1.button("Save", use_container_width=True) and new_name.strip():
-            target = st.session_state.rename_target
-            clean_name = new_name.strip()
-            if clean_name != target:
-                st.session_state.sessions[clean_name] = st.session_state.sessions.pop(target)
-                if target in st.session_state.pinned_chats:
-                    st.session_state.pinned_chats.remove(target)
-                    st.session_state.pinned_chats.add(clean_name)
-                if st.session_state.current_session == target:
-                    st.session_state.current_session = clean_name
-            st.session_state.rename_target = None
-            st.rerun()
-        if col_r2.button("Cancel", use_container_width=True):
-            st.session_state.rename_target = None
-            st.rerun()
+        pinned_visible = [s for s in all_chat_names if s in st.session_state.pinned_chats]
+        if pinned_visible:
+            st.markdown("#### 📌 **Pinned**")
+            for s_name in pinned_visible:
+                render_chat_row(s_name, is_pinned=True)
 
-    all_chat_names = [s for s in st.session_state.sessions.keys() if search_query in s.lower()]
-
-    pinned_visible = [s for s in all_chat_names if s in st.session_state.pinned_chats]
-    if pinned_visible:
-        st.markdown("#### 📌 **Pinned**")
-        for s_name in pinned_visible:
-            render_chat_row(s_name, is_pinned=True)
-
-    recents_visible = [s for s in all_chat_names if s not in st.session_state.pinned_chats]
-    st.markdown("#### 🕒 **Recents**")
-    for s_name in recents_visible:
-        render_chat_row(s_name, is_pinned=False)
+        recents_visible = [s for s in all_chat_names if s not in st.session_state.pinned_chats]
+        st.markdown("#### 🕒 **Recents**")
+        for s_name in recents_visible:
+            render_chat_row(s_name, is_pinned=False)
 
 # Header
 st.markdown("<div class='hero-title'>Nexus AI Studio ✨</div>", unsafe_allow_html=True)
 st.markdown(
-    f"<div class='hero-subtitle'>Conversation: <b>{st.session_state.current_session}</b> | Mode: <b>{app_mode}</b></div>",
+    f"<div class='hero-subtitle'>Mode: <b>{app_mode}</b></div>",
     unsafe_allow_html=True
 )
 
-# ----------------- ART GALLERY VIEW -----------------
+# ==========================================
+# PAGE 1: 🖼️ ART GALLERY MODE
+# ==========================================
 if app_mode == "🖼️ Art Gallery":
-    st.markdown("### 🖼️ **Generated Visual Assets**")
-    all_images = [m for s in st.session_state.sessions.values() for m in s if m.get("type") == "image"]
-
-    if not all_images:
-        st.info("No generated images yet in this session! Switch to '🎨 Image Generator' mode to make some.")
+    st.markdown("### 🖼️ **Visual Showcase**")
+    if not st.session_state.image_history:
+        st.info("No generated images yet! Switch to '🎨 Image Generator' to create your first artwork.")
     else:
         cols = st.columns(3)
-        for idx, img_item in enumerate(all_images):
+        for idx, img_item in enumerate(reversed(st.session_state.image_history)):
             with cols[idx % 3]:
                 st.image(img_item["content"], caption=img_item.get("caption", ""), use_container_width=True)
                 if "bytes" in img_item:
                     st.download_button(
                         label="📥 Download",
                         data=img_item["bytes"],
-                        file_name=f"nexus_gallery_{idx+1}.png",
+                        file_name=f"nexus_artwork_{idx+1}.png",
                         mime="image/png",
                         key=f"gal_dl_{idx}"
                     )
     st.stop()
 
-# ----------------- CHAT RENDERING -----------------
-active_msgs = st.session_state.sessions[st.session_state.current_session]
-for idx, msg in enumerate(active_msgs):
-    with st.chat_message(msg["role"]):
-        if msg.get("type") == "image":
-            st.image(msg["content"], caption=msg.get("caption", "Generated Artwork"), use_container_width=True)
-            if "bytes" in msg:
+# ==========================================
+# PAGE 2: 🎨 DEDICATED IMAGE GENERATOR MODE
+# ==========================================
+elif app_mode == "🎨 Image Generator":
+    st.markdown("### 🎨 **AI Image Creation Studio**")
+    st.caption("Enter a descriptive visual prompt below to generate watermark-free artwork.")
+
+    # Show only generated images (No text conversation leaks here)
+    if not st.session_state.image_history:
+        st.markdown(
+            """
+            <div style="text-align: center; padding: 40px; color: #888; border: 1px dashed #333; border-radius: 12px; margin: 20px 0;">
+                No artwork generated yet. Type what you want to create in the box below!
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+    else:
+        for idx, img_item in enumerate(st.session_state.image_history):
+            with st.chat_message("user"):
+                st.markdown(f"**Prompt:** {img_item.get('caption', '')}")
+            with st.chat_message("assistant"):
+                st.image(img_item["content"], use_container_width=True)
                 st.download_button(
-                    label="📥 Download Image",
-                    data=msg["bytes"],
+                    label="📥 Download High-Res Image",
+                    data=img_item["bytes"],
                     file_name="nexus_artwork.png",
                     mime="image/png",
-                    key=f"dl_img_{idx}"
+                    key=f"img_dl_{idx}"
                 )
-        else:
-            st.markdown(msg["content"])
-            if enable_tts and msg["role"] == "assistant" and len(msg.get("content", "")) > 5:
-                if st.button("🔊 Play Voice", key=f"tts_{idx}"):
-                    try:
-                        tts = gTTS(text=msg["content"][:400], lang="en")
-                        audio_buffer = io.BytesIO()
-                        tts.write_to_fp(audio_buffer)
-                        st.audio(audio_buffer.getvalue(), format="audio/mp3", autoplay=True)
-                    except Exception:
-                        pass
 
-if app_mode == "💬 Chat Assistant":
-    placeholder = "Ask anything..."
-elif app_mode == "📄 Document Q&A (RAG)":
-    placeholder = f"Ask questions about '{st.session_state.uploaded_file_name}'..." if st.session_state.uploaded_file_name else "Please upload a document first..."
-else:
-    placeholder = "Describe the image you want to create..."
+    if prompt := st.chat_input("Describe the image you want to create..."):
+        with st.chat_message("user"):
+            st.markdown(f"**Prompt:** {prompt}")
 
-# ----------------- INPUT HANDLING -----------------
-if prompt := st.chat_input(placeholder):
-    current_key = st.session_state.current_session
-    if current_key.startswith("Chat ") or current_key == "New Conversation":
-        new_title = prompt[:24] + ("..." if len(prompt) > 24 else "")
-        st.session_state.sessions[new_title] = st.session_state.sessions.pop(current_key)
-        if current_key in st.session_state.pinned_chats:
-            st.session_state.pinned_chats.remove(current_key)
-            st.session_state.pinned_chats.add(new_title)
-        st.session_state.current_session = new_title
-        active_msgs = st.session_state.sessions[new_title]
-
-    active_msgs.append({"role": "user", "type": "text", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    # 1. Image Generator (Turbo + Auto Watermark Cropping)
-    if app_mode == "🎨 Image Generator":
         with st.chat_message("assistant"):
-            with st.spinner("Generating artwork..."):
+            with st.spinner("Rendering artwork with Turbo Engine..."):
                 try:
                     clean_p = prompt.strip()
                     encoded_prompt = urllib.parse.quote(clean_p)
@@ -405,16 +395,14 @@ if prompt := st.chat_input(placeholder):
                         raw_img = Image.open(io.BytesIO(response.content))
                         w, h = raw_img.size
 
+                        # Crop out the bottom watermark
                         clean_img = raw_img.crop((0, 0, w, h - 92))
 
                         buf = io.BytesIO()
                         clean_img.save(buf, format="PNG")
                         clean_bytes = buf.getvalue()
 
-                        st.image(clean_img, caption=prompt, use_container_width=True)
-                        active_msgs.append({
-                            "role": "assistant",
-                            "type": "image",
+                        st.session_state.image_history.append({
                             "content": clean_img,
                             "bytes": clean_bytes,
                             "caption": prompt
@@ -427,11 +415,19 @@ if prompt := st.chat_input(placeholder):
                 except Exception as e:
                     st.error(f"Image error: {str(e)}")
 
-    # 2. Document Q&A (RAG)
-    elif app_mode == "📄 Document Q&A (RAG)":
+# ==========================================
+# PAGE 3: 📄 DOCUMENT Q&A (RAG) MODE
+# ==========================================
+elif app_mode == "📄 Document Q&A (RAG)":
+    st.markdown("### 📄 **Document Intelligence (RAG)**")
+    if not st.session_state.doc_context:
+        st.info("Please upload a PDF or TXT file using the sidebar to begin querying your document.")
+    else:
+        st.success(f"Active Document: **{st.session_state.uploaded_file_name}**")
+
+    if prompt := st.chat_input("Ask questions about your uploaded document..."):
         if not st.session_state.doc_context:
-            with st.chat_message("assistant"):
-                st.warning("Please upload a PDF or TXT file using the sidebar first!")
+            st.warning("Please upload a document first!")
         elif not client:
             st.error("Gemini API key is not ready.")
         else:
@@ -440,6 +436,9 @@ if prompt := st.chat_input(placeholder):
                 f"--- DOCUMENT CONTENT ---\n{st.session_state.doc_context}\n--- END DOCUMENT ---\n\n"
                 f"Question: {prompt}"
             )
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
             with st.chat_message("assistant"):
                 placeholder_box = st.empty()
                 with st.spinner("Reading document..."):
@@ -458,12 +457,43 @@ if prompt := st.chat_input(placeholder):
 
                     if generated_text:
                         placeholder_box.markdown(generated_text)
-                        active_msgs.append({"role": "assistant", "type": "text", "content": generated_text})
                     else:
                         placeholder_box.error("Unable to answer from the document. Please try again.")
 
-    # 3. Chat Assistant (Natural direct AI responses, zero persona forcing)
-    else:
+# ==========================================
+# PAGE 4: 💬 CHAT ASSISTANT MODE
+# ==========================================
+else:
+    active_msgs = st.session_state.sessions[st.session_state.current_session]
+    
+    for idx, msg in enumerate(active_msgs):
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            if enable_tts and msg["role"] == "assistant" and len(msg.get("content", "")) > 5:
+                if st.button("🔊 Play Voice", key=f"tts_{idx}"):
+                    try:
+                        tts = gTTS(text=msg["content"][:400], lang="en")
+                        audio_buffer = io.BytesIO()
+                        tts.write_to_fp(audio_buffer)
+                        st.audio(audio_buffer.getvalue(), format="audio/mp3", autoplay=True)
+                    except Exception:
+                        pass
+
+    if prompt := st.chat_input("Ask anything..."):
+        current_key = st.session_state.current_session
+        if current_key.startswith("Chat ") or current_key == "New Conversation":
+            new_title = prompt[:24] + ("..." if len(prompt) > 24 else "")
+            st.session_state.sessions[new_title] = st.session_state.sessions.pop(current_key)
+            if current_key in st.session_state.pinned_chats:
+                st.session_state.pinned_chats.remove(current_key)
+                st.session_state.pinned_chats.add(new_title)
+            st.session_state.current_session = new_title
+            active_msgs = st.session_state.sessions[new_title]
+
+        active_msgs.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
         if not client:
             st.error("Gemini API key is not ready. Please verify GEMINI_API_KEY in Secrets.")
         else:
@@ -475,7 +505,6 @@ if prompt := st.chat_input(placeholder):
 
                     for m in AVAILABLE_MODELS:
                         try:
-                            # Direct query with zero persona restriction
                             res = client.models.generate_content(
                                 model=m,
                                 contents=prompt,
@@ -489,6 +518,6 @@ if prompt := st.chat_input(placeholder):
 
                     if generated_text:
                         placeholder_box.markdown(generated_text)
-                        active_msgs.append({"role": "assistant", "type": "text", "content": generated_text})
+                        active_msgs.append({"role": "assistant", "content": generated_text})
                     else:
                         placeholder_box.error(f"Could not reach models. Details: {' | '.join(error_logs[:2])}")
