@@ -379,7 +379,7 @@ if app_mode == "🖼️ Art Gallery":
 
 elif app_mode == "🎨 Image Generator":
     st.markdown("### 🎨 **AI Image Creation Studio**")
-    st.caption("Generate crisp, high-accuracy 1024px artwork without watermarks.")
+    st.caption("Generate studio-grade artwork directly using Google Imagen 3.")
 
     if not st.session_state.image_history:
         st.markdown(
@@ -409,72 +409,63 @@ elif app_mode == "🎨 Image Generator":
             st.markdown(f"**Prompt:** {prompt}")
 
         with st.chat_message("assistant"):
-            with st.spinner("Optimizing tokens and generating accurate artwork..."):
-                try:
-                    clean_input = prompt.strip()
-                    optimized_query = clean_input
+            with st.spinner("Generating artwork with Google Imagen 3..."):
+                clean_prompt = prompt.strip()
+                generated_successfully = False
 
-                    # 1. Gemini transforms description into concise, culturally accurate diffusion tokens
-                    if client:
-                        try:
-                            system_rules = (
-                                "You are an expert AI diffusion prompt optimizer. Convert the user input into a concise visual prompt under 35 words.\n"
-                                "MANDATORY ICONOGRAPHY RULES:\n"
-                                "- If the request mentions Lord Krishna or any Indian male deity, explicitly start with: "
-                                "'handsome young Indian male prince, masculine chest, divine blue skin, royal yellow pitambara silk dhoti, "
-                                "intricate golden peacock feather crown (morpankh), playing golden bamboo flute (bansuri) with both hands'.\n"
-                                "- Strictly forbid feminine anatomy, western faces, breasts, or sci-fi neon lines.\n"
-                                "- Output ONLY comma-separated prompt words. No conversational text."
+                # Primary engine: Google Imagen 3
+                if client:
+                    try:
+                        result = client.models.generate_images(
+                            model="imagen-3.0-generate-002",
+                            prompt=clean_prompt,
+                            config=dict(
+                                number_of_images=1,
+                                aspect_ratio="1:1",
+                                person_generation="ALLOW_ADULT"
                             )
-                            res = client.models.generate_content(
-                                model=AVAILABLE_MODELS[0],
-                                contents=f"{system_rules}\n\nUser request: {clean_input}"
-                            )
-                            if res and res.text:
-                                optimized_query = res.text.strip().replace("\n", ", ")
-                        except Exception:
-                            pass
+                        )
+                        if result and result.generated_images:
+                            img_bytes = result.generated_images[0].image.image_bytes
+                            pil_img = Image.open(io.BytesIO(img_bytes))
 
-                    # 2. Append quality parameters and negative prompts
-                    final_prompt = (
-                        f"{optimized_query}, masterpiece, highly detailed, photorealistic oil painting, devotional warm lighting, "
-                        f"sharp focus --no woman, female, breasts, nudity, western, deformed hands, sci-fi, cartoon"
-                    )
-                    encoded_prompt = urllib.parse.quote(final_prompt)
-                    random_seed = random.randint(1000, 999999)
+                            st.session_state.image_history.append({
+                                "content": pil_img,
+                                "bytes": img_bytes,
+                                "caption": prompt
+                            })
+                            save_current_history()
+                            generated_successfully = True
+                            st.rerun()
+                    except Exception as imagen_err:
+                        # Continue to fallback if Imagen fails
+                        pass
 
-                    # 3. Primary generation using Flux
-                    image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&model=flux&seed={random_seed}&nologo=true"
-                    response = requests.get(image_url, timeout=45)
-                    
-                    # 4. Fallback to Turbo if Flux is overloaded
-                    if response.status_code != 200:
-                        fallback_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1150&model=turbo&seed={random_seed}&nologo=true"
-                        response = requests.get(fallback_url, timeout=30)
-                        if response.status_code == 200:
-                            raw_img = Image.open(io.BytesIO(response.content))
-                            w, h = raw_img.size
-                            clean_img = raw_img.crop((0, 0, w, h - 126))
+                # Fallback engine: Flux
+                if not generated_successfully:
+                    try:
+                        encoded = urllib.parse.quote(f"{clean_prompt}, masterpiece, photorealistic, intricate detail, high resolution")
+                        seed = random.randint(1000, 99999)
+                        fallback_url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&model=flux&seed={seed}&nologo=true"
+                        
+                        resp = requests.get(fallback_url, timeout=40)
+                        if resp.status_code == 200:
+                            pil_img = Image.open(io.BytesIO(resp.content))
+                            buf = io.BytesIO()
+                            pil_img.save(buf, format="PNG")
+                            img_bytes = buf.getvalue()
+
+                            st.session_state.image_history.append({
+                                "content": pil_img,
+                                "bytes": img_bytes,
+                                "caption": prompt
+                            })
+                            save_current_history()
+                            st.rerun()
                         else:
-                            st.error("Image server busy. Please resubmit.")
-                            clean_img = None
-                    else:
-                        clean_img = Image.open(io.BytesIO(response.content))
-
-                    if clean_img:
-                        buf = io.BytesIO()
-                        clean_img.save(buf, format="PNG")
-                        clean_bytes = buf.getvalue()
-
-                        st.session_state.image_history.append({
-                            "content": clean_img,
-                            "bytes": clean_bytes,
-                            "caption": prompt
-                        })
-                        save_current_history()
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"Image generation error: {str(e)}")
+                            st.error("Image server unavailable. Please try again.")
+                    except Exception as fallback_err:
+                        st.error(f"Generation error: {fallback_err}")
 
 elif app_mode == "📄 Document Q&A (RAG)":
     st.markdown("### 📄 **Document Intelligence (RAG)**")
