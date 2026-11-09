@@ -102,9 +102,9 @@ if api_key:
         st.error(f"Error connecting to Gemini: {e}")
 
 if not AVAILABLE_MODELS:
-    AVAILABLE_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
+    AVAILABLE_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
 
-# 4. Session State Setup (Defaults to a fresh New Conversation)
+# 4. Session State Setup
 if "sessions" not in st.session_state:
     saved_chats, saved_images = load_saved_history()
     st.session_state.sessions = saved_chats
@@ -236,7 +236,7 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# 6. Sidebar (Chat List & Quick Controls)
+# 6. Sidebar
 with st.sidebar:
     st.markdown("### ✨ **Nexus AI**")
 
@@ -379,7 +379,7 @@ if app_mode == "🖼️ Art Gallery":
 
 elif app_mode == "🎨 Image Generator":
     st.markdown("### 🎨 **AI Image Creation Studio**")
-    st.caption("Generate crisp 1024px artwork without watermarks. All images remain saved across page refreshes.")
+    st.caption("Generate crisp, high-accuracy 1024px artwork without watermarks.")
 
     if not st.session_state.image_history:
         st.markdown(
@@ -409,44 +409,59 @@ elif app_mode == "🎨 Image Generator":
             st.markdown(f"**Prompt:** {prompt}")
 
         with st.chat_message("assistant"):
-            with st.spinner("Optimizing prompt with Gemini & rendering artwork (3-5s)..."):
+            with st.spinner("Optimizing tokens and generating accurate artwork..."):
                 try:
-                    enhanced_prompt = prompt.strip()
-                    
-                    # 1. Use Gemini to optimize prompt tokens and prevent gender/cultural mistakes
+                    clean_input = prompt.strip()
+                    optimized_query = clean_input
+
+                    # 1. Gemini transforms description into concise, culturally accurate diffusion tokens
                     if client:
                         try:
-                            optimizer_instruction = (
-                                "You are an expert diffusion prompt engineer. Transform the following user request into a "
-                                "concise, highly accurate image prompt (under 45 words). If the request is about religious, "
-                                "mythological, or cultural figures (like Lord Krishna, Shiva, etc.), explicitly specify the "
-                                "correct gender, traditional royal garments, crowns, iconic sacred ornaments, and clear Indian facial features. "
-                                "Output ONLY the raw optimized prompt words separated by commas. No conversational text."
+                            system_rules = (
+                                "You are an expert AI diffusion prompt optimizer. Convert the user input into a concise visual prompt under 35 words.\n"
+                                "MANDATORY ICONOGRAPHY RULES:\n"
+                                "- If the request mentions Lord Krishna or any Indian male deity, explicitly start with: "
+                                "'handsome young Indian male prince, masculine chest, divine blue skin, royal yellow pitambara silk dhoti, "
+                                "intricate golden peacock feather crown (morpankh), playing golden bamboo flute (bansuri) with both hands'.\n"
+                                "- Strictly forbid feminine anatomy, western faces, breasts, or sci-fi neon lines.\n"
+                                "- Output ONLY comma-separated prompt words. No conversational text."
                             )
-                            opt_res = client.models.generate_content(
+                            res = client.models.generate_content(
                                 model=AVAILABLE_MODELS[0],
-                                contents=f"{optimizer_instruction}\n\nUser request: {prompt}"
+                                contents=f"{system_rules}\n\nUser request: {clean_input}"
                             )
-                            if opt_res and opt_res.text:
-                                enhanced_prompt = opt_res.text.strip().replace("\n", ", ")
+                            if res and res.text:
+                                optimized_query = res.text.strip().replace("\n", ", ")
                         except Exception:
                             pass
 
-                    # 2. Append quality anchors
-                    final_query = f"{enhanced_prompt}, photorealistic, sharp focus, vibrant colors, intricate details, 8k resolution, cinematic lighting"
-                    encoded_prompt = urllib.parse.quote(final_query)
+                    # 2. Append quality parameters and negative prompts
+                    final_prompt = (
+                        f"{optimized_query}, masterpiece, highly detailed, photorealistic oil painting, devotional warm lighting, "
+                        f"sharp focus --no woman, female, breasts, nudity, western, deformed hands, sci-fi, cartoon"
+                    )
+                    encoded_prompt = urllib.parse.quote(final_prompt)
                     random_seed = random.randint(1000, 999999)
 
-                    # 3. Request 1024x1150 render and crop 126px watermark
-                    image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1150&model=turbo&seed={random_seed}&nologo=true"
+                    # 3. Primary generation using Flux
+                    image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&model=flux&seed={random_seed}&nologo=true"
+                    response = requests.get(image_url, timeout=45)
+                    
+                    # 4. Fallback to Turbo if Flux is overloaded
+                    if response.status_code != 200:
+                        fallback_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1150&model=turbo&seed={random_seed}&nologo=true"
+                        response = requests.get(fallback_url, timeout=30)
+                        if response.status_code == 200:
+                            raw_img = Image.open(io.BytesIO(response.content))
+                            w, h = raw_img.size
+                            clean_img = raw_img.crop((0, 0, w, h - 126))
+                        else:
+                            st.error("Image server busy. Please resubmit.")
+                            clean_img = None
+                    else:
+                        clean_img = Image.open(io.BytesIO(response.content))
 
-                    response = requests.get(image_url, timeout=35)
-                    if response.status_code == 200:
-                        raw_img = Image.open(io.BytesIO(response.content))
-                        w, h = raw_img.size
-
-                        clean_img = raw_img.crop((0, 0, w, h - 126))
-
+                    if clean_img:
                         buf = io.BytesIO()
                         clean_img.save(buf, format="PNG")
                         clean_bytes = buf.getvalue()
@@ -458,10 +473,8 @@ elif app_mode == "🎨 Image Generator":
                         })
                         save_current_history()
                         st.rerun()
-                    else:
-                        st.error("Image server busy. Please send your prompt again.")
                 except Exception as e:
-                    st.error(f"Image error: {str(e)}")
+                    st.error(f"Image generation error: {str(e)}")
 
 elif app_mode == "📄 Document Q&A (RAG)":
     st.markdown("### 📄 **Document Intelligence (RAG)**")
