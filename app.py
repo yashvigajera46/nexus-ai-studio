@@ -62,7 +62,6 @@ def load_saved_history():
 
 def save_current_history():
     try:
-        # Convert PIL images to serializable base64 strings
         serializable_images = []
         for img in st.session_state.image_history:
             serializable_images.append({
@@ -105,13 +104,12 @@ if api_key:
 if not AVAILABLE_MODELS:
     AVAILABLE_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
 
-# 4. Session State Setup (Always defaults fresh visit to New Conversation)
+# 4. Session State Setup (Defaults to a fresh New Conversation)
 if "sessions" not in st.session_state:
     saved_chats, saved_images = load_saved_history()
     st.session_state.sessions = saved_chats
     st.session_state.image_history = saved_images
 
-    # Always initialize fresh startup to a clean "New Conversation"
     if "New Conversation" not in st.session_state.sessions:
         st.session_state.sessions["New Conversation"] = [
             {"role": "assistant", "content": "Welcome to Nexus AI Studio. What would you like to explore or create today?"}
@@ -411,16 +409,38 @@ elif app_mode == "🎨 Image Generator":
             st.markdown(f"**Prompt:** {prompt}")
 
         with st.chat_message("assistant"):
-            with st.spinner("Rendering sharp high-definition artwork (3-5s)..."):
+            with st.spinner("Optimizing prompt with Gemini & rendering artwork (3-5s)..."):
                 try:
-                    clean_p = prompt.strip()
-                    enhanced = f"{clean_p}, sharp focus, highly detailed, 8k resolution, octane 3d render, professional studio lighting"
-                    encoded_prompt = urllib.parse.quote(enhanced)
+                    enhanced_prompt = prompt.strip()
+                    
+                    # 1. Use Gemini to optimize prompt tokens and prevent gender/cultural mistakes
+                    if client:
+                        try:
+                            optimizer_instruction = (
+                                "You are an expert diffusion prompt engineer. Transform the following user request into a "
+                                "concise, highly accurate image prompt (under 45 words). If the request is about religious, "
+                                "mythological, or cultural figures (like Lord Krishna, Shiva, etc.), explicitly specify the "
+                                "correct gender, traditional royal garments, crowns, iconic sacred ornaments, and clear Indian facial features. "
+                                "Output ONLY the raw optimized prompt words separated by commas. No conversational text."
+                            )
+                            opt_res = client.models.generate_content(
+                                model=AVAILABLE_MODELS[0],
+                                contents=f"{optimizer_instruction}\n\nUser request: {prompt}"
+                            )
+                            if opt_res and opt_res.text:
+                                enhanced_prompt = opt_res.text.strip().replace("\n", ", ")
+                        except Exception:
+                            pass
+
+                    # 2. Append quality anchors
+                    final_query = f"{enhanced_prompt}, photorealistic, sharp focus, vibrant colors, intricate details, 8k resolution, cinematic lighting"
+                    encoded_prompt = urllib.parse.quote(final_query)
                     random_seed = random.randint(1000, 999999)
 
+                    # 3. Request 1024x1150 render and crop 126px watermark
                     image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1150&model=turbo&seed={random_seed}&nologo=true"
 
-                    response = requests.get(image_url, timeout=30)
+                    response = requests.get(image_url, timeout=35)
                     if response.status_code == 200:
                         raw_img = Image.open(io.BytesIO(response.content))
                         w, h = raw_img.size
@@ -506,7 +526,6 @@ else:
         current_key = st.session_state.current_session
         if current_key.startswith("Chat ") or current_key == "New Conversation":
             new_title = prompt[:24] + ("..." if len(prompt) > 24 else "")
-            # Move messages into a newly named session
             st.session_state.sessions[new_title] = st.session_state.sessions.pop(current_key)
             if current_key in st.session_state.pinned_chats:
                 st.session_state.pinned_chats.remove(current_key)
