@@ -1,12 +1,6 @@
-import base64
-import io
 import json
 import os
-import random
-import time
-import urllib.parse
-from PIL import Image
-import requests
+import io
 import streamlit as st
 from dotenv import load_dotenv
 from google import genai
@@ -21,7 +15,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 2. Local File Storage (Persistent Chats & Images)
+# 2. Local File Storage (Persistent Chats Only)
 HISTORY_FILE = "chat_history.json"
 
 def load_saved_history():
@@ -29,50 +23,20 @@ def load_saved_history():
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                chats = data.get("chats", {})
-                raw_images = data.get("images", [])
-                
-                restored_images = []
-                for item in raw_images:
-                    try:
-                        raw_bytes = base64.b64decode(item["b64"])
-                        pil_img = Image.open(io.BytesIO(raw_bytes))
-                        restored_images.append({
-                            "content": pil_img,
-                            "bytes": raw_bytes,
-                            "caption": item.get("caption", "Artwork")
-                        })
-                    except Exception:
-                        continue
-                        
-                if not chats:
-                    chats = {
-                        "New Conversation": [
-                            {"role": "assistant", "content": "Welcome to Nexus AI Studio. What would you like to explore or create today?"}
-                        ]
-                    }
-                return chats, restored_images
+                chats = data.get("chats", {}) if isinstance(data, dict) and "chats" in data else data
+                if isinstance(chats, dict) and chats:
+                    return chats
         except Exception:
             pass
     return {
         "New Conversation": [
-            {"role": "assistant", "content": "Welcome to Nexus AI Studio. What would you like to explore or create today?"}
+            {"role": "assistant", "content": "Welcome to Nexus AI Studio. What would you like to explore or discuss today?"}
         ]
-    }, []
+    }
 
 def save_current_history():
     try:
-        serializable_images = []
-        for img in st.session_state.image_history:
-            serializable_images.append({
-                "caption": img.get("caption", ""),
-                "b64": base64.b64encode(img["bytes"]).decode("utf-8")
-            })
-            
-        payload = {
-            "chats": st.session_state.sessions,
-            "images": serializable_images
-        }
+        payload = {"chats": st.session_state.sessions}
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
     except Exception as e:
@@ -104,15 +68,12 @@ if api_key:
 if not AVAILABLE_MODELS:
     AVAILABLE_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
 
-# 4. Session State Setup
+# 4. Session State Setup (Always starts on a clean New Conversation)
 if "sessions" not in st.session_state:
-    saved_chats, saved_images = load_saved_history()
-    st.session_state.sessions = saved_chats
-    st.session_state.image_history = saved_images
-
+    st.session_state.sessions = load_saved_history()
     if "New Conversation" not in st.session_state.sessions:
         st.session_state.sessions["New Conversation"] = [
-            {"role": "assistant", "content": "Welcome to Nexus AI Studio. What would you like to explore or create today?"}
+            {"role": "assistant", "content": "Welcome to Nexus AI Studio. What would you like to explore or discuss today?"}
         ]
     st.session_state.current_session = "New Conversation"
 
@@ -236,7 +197,7 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# 6. Sidebar
+# 6. Sidebar (Chat List & Controls)
 with st.sidebar:
     st.markdown("### ✨ **Nexus AI**")
 
@@ -255,7 +216,7 @@ with st.sidebar:
     
     app_mode = st.radio(
         "Mode:",
-        ["💬 Chat Assistant", "🎨 Image Generator", "🖼️ Art Gallery", "📄 Document Q&A (RAG)"],
+        ["💬 Chat Assistant", "📄 Document Q&A (RAG)"],
         index=0
     )
 
@@ -278,7 +239,7 @@ with st.sidebar:
                 st.session_state.uploaded_file_name = uploaded_doc.name
                 st.success(f"Loaded: {uploaded_doc.name}")
 
-    with st.expander("⚙️ Advanced Parameters"):
+    with st.expander("⚙️ Preferences"):
         enable_tts = st.checkbox("Enable Voice Audio (TTS)", value=False)
         selected_theme = st.selectbox(
             "UI Accent Palette:",
@@ -358,116 +319,7 @@ st.markdown("<div class='hero-title'>Nexus AI Studio ✨</div>", unsafe_allow_ht
 st.markdown(f"<div class='hero-subtitle'>Conversation: <b>{st.session_state.current_session}</b> | Mode: <b>{app_mode}</b></div>", unsafe_allow_html=True)
 
 # 7. Page Views
-if app_mode == "🖼️ Art Gallery":
-    st.markdown("### 🖼️ **Personal Visual Showcase**")
-    if not st.session_state.image_history:
-        st.info("No generated artwork found yet. Switch to '🎨 Image Generator' to create some!")
-    else:
-        cols = st.columns(3)
-        for idx, img_item in enumerate(reversed(st.session_state.image_history)):
-            with cols[idx % 3]:
-                st.image(img_item["content"], caption=img_item.get("caption", ""), use_container_width=True)
-                if "bytes" in img_item:
-                    st.download_button(
-                        label="📥 Download",
-                        data=img_item["bytes"],
-                        file_name=f"nexus_artwork_{idx+1}.png",
-                        mime="image/png",
-                        key=f"gal_dl_{idx}"
-                    )
-    st.stop()
-
-elif app_mode == "🎨 Image Generator":
-    st.markdown("### 🎨 **AI Image Creation Studio**")
-    st.caption("Generate studio-grade artwork directly using Google Imagen 3.")
-
-    if not st.session_state.image_history:
-        st.markdown(
-            """
-            <div style="text-align: center; padding: 40px; color: #888; border: 1px dashed #333; border-radius: 12px; margin: 20px 0;">
-                No artwork generated yet. Type your visual description below to begin!
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-    else:
-        for idx, img_item in enumerate(st.session_state.image_history):
-            with st.chat_message("user"):
-                st.markdown(f"**Prompt:** {img_item.get('caption', '')}")
-            with st.chat_message("assistant"):
-                st.image(img_item["content"], use_container_width=True)
-                st.download_button(
-                    label="📥 Download High-Res Image",
-                    data=img_item["bytes"],
-                    file_name="nexus_artwork.png",
-                    mime="image/png",
-                    key=f"img_dl_{idx}"
-                )
-
-    if prompt := st.chat_input("Describe the image you want to create..."):
-        with st.chat_message("user"):
-            st.markdown(f"**Prompt:** {prompt}")
-
-        with st.chat_message("assistant"):
-            with st.spinner("Generating artwork with Google Imagen 3..."):
-                clean_prompt = prompt.strip()
-                generated_successfully = False
-
-                # Primary engine: Google Imagen 3
-                if client:
-                    try:
-                        result = client.models.generate_images(
-                            model="imagen-3.0-generate-002",
-                            prompt=clean_prompt,
-                            config=dict(
-                                number_of_images=1,
-                                aspect_ratio="1:1",
-                                person_generation="ALLOW_ADULT"
-                            )
-                        )
-                        if result and result.generated_images:
-                            img_bytes = result.generated_images[0].image.image_bytes
-                            pil_img = Image.open(io.BytesIO(img_bytes))
-
-                            st.session_state.image_history.append({
-                                "content": pil_img,
-                                "bytes": img_bytes,
-                                "caption": prompt
-                            })
-                            save_current_history()
-                            generated_successfully = True
-                            st.rerun()
-                    except Exception as imagen_err:
-                        # Continue to fallback if Imagen fails
-                        pass
-
-                # Fallback engine: Flux
-                if not generated_successfully:
-                    try:
-                        encoded = urllib.parse.quote(f"{clean_prompt}, masterpiece, photorealistic, intricate detail, high resolution")
-                        seed = random.randint(1000, 99999)
-                        fallback_url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&model=flux&seed={seed}&nologo=true"
-                        
-                        resp = requests.get(fallback_url, timeout=40)
-                        if resp.status_code == 200:
-                            pil_img = Image.open(io.BytesIO(resp.content))
-                            buf = io.BytesIO()
-                            pil_img.save(buf, format="PNG")
-                            img_bytes = buf.getvalue()
-
-                            st.session_state.image_history.append({
-                                "content": pil_img,
-                                "bytes": img_bytes,
-                                "caption": prompt
-                            })
-                            save_current_history()
-                            st.rerun()
-                        else:
-                            st.error("Image server unavailable. Please try again.")
-                    except Exception as fallback_err:
-                        st.error(f"Generation error: {fallback_err}")
-
-elif app_mode == "📄 Document Q&A (RAG)":
+if app_mode == "📄 Document Q&A (RAG)":
     st.markdown("### 📄 **Document Intelligence (RAG)**")
     if not st.session_state.doc_context:
         st.info("Please upload a PDF or TXT file using the sidebar first.")
@@ -490,24 +342,19 @@ elif app_mode == "📄 Document Q&A (RAG)":
 
             with st.chat_message("assistant"):
                 placeholder_box = st.empty()
+                full_res = ""
                 with st.spinner("Analyzing document..."):
-                    generated_text = ""
                     for m in AVAILABLE_MODELS:
                         try:
-                            res = client.models.generate_content(
-                                model=m,
-                                contents=rag_prompt,
-                            )
-                            if res and res.text:
-                                generated_text = res.text
-                                break
+                            stream = client.models.generate_content_stream(model=m, contents=rag_prompt)
+                            for chunk in stream:
+                                if chunk.text:
+                                    full_res += chunk.text
+                                    placeholder_box.markdown(full_res + "▌")
+                            placeholder_box.markdown(full_res)
+                            break
                         except Exception:
                             continue
-
-                    if generated_text:
-                        placeholder_box.markdown(generated_text)
-                    else:
-                        placeholder_box.error("Unable to answer from the document. Please try again.")
 
 else:
     # Chat Assistant (Instant Token Streaming)
