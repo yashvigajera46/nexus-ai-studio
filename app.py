@@ -1,3 +1,4 @@
+import base64
 import io
 import json
 import os
@@ -20,7 +21,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 2. Local File Storage with Active Session Retention
+# 2. Local File Storage (Persistent Chats & Images)
 HISTORY_FILE = "chat_history.json"
 
 def load_saved_history():
@@ -28,32 +29,55 @@ def load_saved_history():
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if isinstance(data, dict) and "chats" in data:
-                    chats = data["chats"]
-                    last_active = data.get("last_active", "New Conversation")
-                    return chats, last_active
-                elif isinstance(data, dict):
-                    # Backward compatibility if data was a raw session dictionary
-                    keys = list(data.keys())
-                    return data, keys[-1] if keys else "New Conversation"
+                chats = data.get("chats", {})
+                raw_images = data.get("images", [])
+                
+                restored_images = []
+                for item in raw_images:
+                    try:
+                        raw_bytes = base64.b64decode(item["b64"])
+                        pil_img = Image.open(io.BytesIO(raw_bytes))
+                        restored_images.append({
+                            "content": pil_img,
+                            "bytes": raw_bytes,
+                            "caption": item.get("caption", "Artwork")
+                        })
+                    except Exception:
+                        continue
+                        
+                if not chats:
+                    chats = {
+                        "New Conversation": [
+                            {"role": "assistant", "content": "Welcome to Nexus AI Studio. What would you like to explore or create today?"}
+                        ]
+                    }
+                return chats, restored_images
         except Exception:
             pass
     return {
         "New Conversation": [
             {"role": "assistant", "content": "Welcome to Nexus AI Studio. What would you like to explore or create today?"}
         ]
-    }, "New Conversation"
+    }, []
 
 def save_current_history():
     try:
+        # Convert PIL images to serializable base64 strings
+        serializable_images = []
+        for img in st.session_state.image_history:
+            serializable_images.append({
+                "caption": img.get("caption", ""),
+                "b64": base64.b64encode(img["bytes"]).decode("utf-8")
+            })
+            
         payload = {
-            "last_active": st.session_state.current_session,
-            "chats": st.session_state.sessions
+            "chats": st.session_state.sessions,
+            "images": serializable_images
         }
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f"Error saving chat history: {e}")
+        print(f"Error saving history: {e}")
 
 # 3. Credentials & Gemini API
 load_dotenv()
@@ -81,20 +105,25 @@ if api_key:
 if not AVAILABLE_MODELS:
     AVAILABLE_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
 
-# 4. Session State Setup
+# 4. Session State Setup (Always defaults fresh visit to New Conversation)
 if "sessions" not in st.session_state:
-    saved_chats, last_active = load_saved_history()
+    saved_chats, saved_images = load_saved_history()
     st.session_state.sessions = saved_chats
-    st.session_state.current_session = last_active if last_active in saved_chats else list(saved_chats.keys())[-1]
+    st.session_state.image_history = saved_images
+
+    # Always initialize fresh startup to a clean "New Conversation"
+    if "New Conversation" not in st.session_state.sessions:
+        st.session_state.sessions["New Conversation"] = [
+            {"role": "assistant", "content": "Welcome to Nexus AI Studio. What would you like to explore or create today?"}
+        ]
+    st.session_state.current_session = "New Conversation"
 
 if "pinned_chats" not in st.session_state:
     st.session_state.pinned_chats = set()
 
 if "current_session" not in st.session_state or st.session_state.current_session not in st.session_state.sessions:
-    st.session_state.current_session = list(st.session_state.sessions.keys())[-1]
+    st.session_state.current_session = "New Conversation"
 
-if "image_history" not in st.session_state:
-    st.session_state.image_history = []
 if "doc_context" not in st.session_state:
     st.session_state.doc_context = ""
 if "uploaded_file_name" not in st.session_state:
@@ -104,7 +133,7 @@ if "rename_target" not in st.session_state:
 if "active_theme" not in st.session_state:
     st.session_state.active_theme = "Sunset Peach"
 
-# 5. Themes & Clean Interface Styling
+# 5. Themes & Styling
 THEMES = {
     "Sunset Peach": {
         "bg": "radial-gradient(circle at 50% 0%, #221a1f 0%, #0d0b0e 100%)",
@@ -209,7 +238,7 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# 6. Sidebar (Chat History Always Visible)
+# 6. Sidebar (Chat List & Quick Controls)
 with st.sidebar:
     st.markdown("### ✨ **Nexus AI**")
 
@@ -264,7 +293,6 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Persistent search & chat list
     search_query = st.text_input("🔍 Search chats...", placeholder="Type keywords...").lower()
 
     def render_chat_row(s_name, is_pinned=False):
@@ -272,7 +300,6 @@ with st.sidebar:
         label = s_name if len(s_name) <= 15 else s_name[:12] + "..."
         if c1.button(label, key=f"btn_{s_name}", use_container_width=True, help=s_name):
             st.session_state.current_session = s_name
-            save_current_history()
             st.rerun()
         
         pin_icon = "⭐" if is_pinned else "☆"
@@ -289,7 +316,7 @@ with st.sidebar:
         if len(st.session_state.sessions) > 1 and c4.button("🗑️", key=f"del_{s_name}", help="Delete chat"):
             st.session_state.pinned_chats.discard(s_name)
             del st.session_state.sessions[s_name]
-            st.session_state.current_session = list(st.session_state.sessions.keys())[-1]
+            st.session_state.current_session = "New Conversation" if "New Conversation" in st.session_state.sessions else list(st.session_state.sessions.keys())[0]
             save_current_history()
             st.rerun()
 
@@ -314,7 +341,7 @@ with st.sidebar:
             st.session_state.rename_target = None
             st.rerun()
 
-    all_chat_names = [s for s in st.session_state.sessions.keys() if search_query in s.lower()]
+    all_chat_names = [s for s in st.session_state.sessions.keys() if search_query in s.lower() and s != "New Conversation"]
 
     pinned_visible = [s for s in all_chat_names if s in st.session_state.pinned_chats]
     if pinned_visible:
@@ -323,9 +350,10 @@ with st.sidebar:
             render_chat_row(s_name, is_pinned=True)
 
     recents_visible = [s for s in all_chat_names if s not in st.session_state.pinned_chats]
-    st.markdown("#### 🕒 **Recents**")
-    for s_name in recents_visible:
-        render_chat_row(s_name, is_pinned=False)
+    if recents_visible:
+        st.markdown("#### 🕒 **Recents**")
+        for s_name in recents_visible:
+            render_chat_row(s_name, is_pinned=False)
 
 # Header
 st.markdown("<div class='hero-title'>Nexus AI Studio ✨</div>", unsafe_allow_html=True)
@@ -335,7 +363,7 @@ st.markdown(f"<div class='hero-subtitle'>Conversation: <b>{st.session_state.curr
 if app_mode == "🖼️ Art Gallery":
     st.markdown("### 🖼️ **Personal Visual Showcase**")
     if not st.session_state.image_history:
-        st.info("No generated artwork yet! Switch to '🎨 Image Generator' to create artwork.")
+        st.info("No generated artwork found yet. Switch to '🎨 Image Generator' to create some!")
     else:
         cols = st.columns(3)
         for idx, img_item in enumerate(reversed(st.session_state.image_history)):
@@ -353,13 +381,13 @@ if app_mode == "🖼️ Art Gallery":
 
 elif app_mode == "🎨 Image Generator":
     st.markdown("### 🎨 **AI Image Creation Studio**")
-    st.caption("Generate crisp, high-definition 1024px artwork without watermarks in seconds.")
+    st.caption("Generate crisp 1024px artwork without watermarks. All images remain saved across page refreshes.")
 
     if not st.session_state.image_history:
         st.markdown(
             """
             <div style="text-align: center; padding: 40px; color: #888; border: 1px dashed #333; border-radius: 12px; margin: 20px 0;">
-                No artwork generated yet. Type your visual description below!
+                No artwork generated yet. Type your visual description below to begin!
             </div>
             """,
             unsafe_allow_html=True
@@ -408,6 +436,7 @@ elif app_mode == "🎨 Image Generator":
                             "bytes": clean_bytes,
                             "caption": prompt
                         })
+                        save_current_history()
                         st.rerun()
                     else:
                         st.error("Image server busy. Please send your prompt again.")
@@ -458,7 +487,7 @@ elif app_mode == "📄 Document Q&A (RAG)":
 
 else:
     # Chat Assistant (Instant Token Streaming)
-    active_msgs = st.session_state.sessions[st.session_state.current_session]
+    active_msgs = st.session_state.sessions.get(st.session_state.current_session, [])
     
     for idx, msg in enumerate(active_msgs):
         with st.chat_message(msg["role"]):
@@ -477,6 +506,7 @@ else:
         current_key = st.session_state.current_session
         if current_key.startswith("Chat ") or current_key == "New Conversation":
             new_title = prompt[:24] + ("..." if len(prompt) > 24 else "")
+            # Move messages into a newly named session
             st.session_state.sessions[new_title] = st.session_state.sessions.pop(current_key)
             if current_key in st.session_state.pinned_chats:
                 st.session_state.pinned_chats.remove(current_key)
