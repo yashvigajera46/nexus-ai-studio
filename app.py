@@ -20,26 +20,38 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 2. Local File Storage (Saves chats across refreshes)
+# 2. Local File Storage with Active Session Retention
 HISTORY_FILE = "chat_history.json"
 
 def load_saved_history():
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                if isinstance(data, dict) and "chats" in data:
+                    chats = data["chats"]
+                    last_active = data.get("last_active", "New Conversation")
+                    return chats, last_active
+                elif isinstance(data, dict):
+                    # Backward compatibility if data was a raw session dictionary
+                    keys = list(data.keys())
+                    return data, keys[-1] if keys else "New Conversation"
         except Exception:
             pass
     return {
         "New Conversation": [
             {"role": "assistant", "content": "Welcome to Nexus AI Studio. What would you like to explore or create today?"}
         ]
-    }
+    }, "New Conversation"
 
 def save_current_history():
     try:
+        payload = {
+            "last_active": st.session_state.current_session,
+            "chats": st.session_state.sessions
+        }
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(st.session_state.sessions, f, ensure_ascii=False, indent=2)
+            json.dump(payload, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"Error saving chat history: {e}")
 
@@ -71,13 +83,15 @@ if not AVAILABLE_MODELS:
 
 # 4. Session State Setup
 if "sessions" not in st.session_state:
-    st.session_state.sessions = load_saved_history()
+    saved_chats, last_active = load_saved_history()
+    st.session_state.sessions = saved_chats
+    st.session_state.current_session = last_active if last_active in saved_chats else list(saved_chats.keys())[-1]
 
 if "pinned_chats" not in st.session_state:
     st.session_state.pinned_chats = set()
 
 if "current_session" not in st.session_state or st.session_state.current_session not in st.session_state.sessions:
-    st.session_state.current_session = list(st.session_state.sessions.keys())[0]
+    st.session_state.current_session = list(st.session_state.sessions.keys())[-1]
 
 if "image_history" not in st.session_state:
     st.session_state.image_history = []
@@ -258,6 +272,7 @@ with st.sidebar:
         label = s_name if len(s_name) <= 15 else s_name[:12] + "..."
         if c1.button(label, key=f"btn_{s_name}", use_container_width=True, help=s_name):
             st.session_state.current_session = s_name
+            save_current_history()
             st.rerun()
         
         pin_icon = "⭐" if is_pinned else "☆"
@@ -274,7 +289,7 @@ with st.sidebar:
         if len(st.session_state.sessions) > 1 and c4.button("🗑️", key=f"del_{s_name}", help="Delete chat"):
             st.session_state.pinned_chats.discard(s_name)
             del st.session_state.sessions[s_name]
-            st.session_state.current_session = list(st.session_state.sessions.keys())[0]
+            st.session_state.current_session = list(st.session_state.sessions.keys())[-1]
             save_current_history()
             st.rerun()
 
@@ -468,8 +483,11 @@ else:
                 st.session_state.pinned_chats.add(new_title)
             st.session_state.current_session = new_title
             active_msgs = st.session_state.sessions[new_title]
+            save_current_history()
 
         active_msgs.append({"role": "user", "content": prompt})
+        save_current_history()
+
         with st.chat_message("user"):
             st.markdown(prompt)
 
