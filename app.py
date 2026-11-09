@@ -427,9 +427,11 @@ else:
                 full_res = ""
                 success = False
 
-                # Format conversation history for full multi-turn context
+                # Format conversation history (skipping initial greeting turn to satisfy Gemini API constraints)
                 formatted_contents = []
                 for m in active_msgs:
+                    if not formatted_contents and m["role"] != "user":
+                        continue
                     role_tag = "user" if m["role"] == "user" else "model"
                     formatted_contents.append(
                         types.Content(
@@ -446,6 +448,7 @@ else:
 
                 gen_config = types.GenerateContentConfig(**config_params)
 
+                last_error = None
                 for m in AVAILABLE_MODELS:
                     try:
                         response_stream = client.models.generate_content_stream(
@@ -462,8 +465,9 @@ else:
                         save_current_history()
                         success = True
                         break
-                    except Exception:
+                    except Exception as err:
+                        last_error = err
                         continue
 
                 if not success:
-                    placeholder_box.error("Google's servers are temporarily experiencing high demand. Please try again.")
+                    placeholder_box.error(f"Error generating response: {last_error}")
