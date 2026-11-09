@@ -1,9 +1,11 @@
 import json
 import os
 import io
+import time
 import streamlit as st
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
 from pypdf import PdfReader
 from gtts import gTTS
 
@@ -15,7 +17,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 2. Local File Storage (Persistent Chats Only)
+# 2. Local File Storage (Persistent Chats)
 HISTORY_FILE = "chat_history.json"
 
 def load_saved_history():
@@ -68,7 +70,7 @@ if api_key:
 if not AVAILABLE_MODELS:
     AVAILABLE_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
 
-# 4. Session State Setup (Always starts on a clean New Conversation)
+# 4. Session State Setup
 if "sessions" not in st.session_state:
     st.session_state.sessions = load_saved_history()
     if "New Conversation" not in st.session_state.sessions:
@@ -92,7 +94,14 @@ if "rename_target" not in st.session_state:
 if "active_theme" not in st.session_state:
     st.session_state.active_theme = "Sunset Peach"
 
-# 5. Themes & Styling
+# 5. Personas & UI Styling
+PERSONAS = {
+    "General Assistant": "You are Nexus, a helpful, authentic, adaptive, and highly capable AI collaborator. Answer with clarity and depth.",
+    "Senior Software Engineer": "You are a Principal Software Engineer. Provide robust, clean, modular code with concise technical explanations and zero fluff.",
+    "Academic Tutor": "You are an expert university professor and tutor. Explain complex concepts intuitively using step-by-step breakdowns, structured notes, and clear examples.",
+    "Executive Summarizer": "You are a concise executive advisor. Provide sharp, high-impact bullet points, actionable takeaways, and direct conclusions."
+}
+
 THEMES = {
     "Sunset Peach": {
         "bg": "radial-gradient(circle at 50% 0%, #221a1f 0%, #0d0b0e 100%)",
@@ -197,7 +206,7 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# 6. Sidebar (Chat List & Controls)
+# 6. Sidebar
 with st.sidebar:
     st.markdown("### ✨ **Nexus AI**")
 
@@ -239,7 +248,9 @@ with st.sidebar:
                 st.session_state.uploaded_file_name = uploaded_doc.name
                 st.success(f"Loaded: {uploaded_doc.name}")
 
-    with st.expander("⚙️ Preferences"):
+    with st.expander("⚙️ AI Persona & Tools"):
+        selected_persona = st.selectbox("AI Role / Persona:", list(PERSONAS.keys()), index=0)
+        enable_search = st.checkbox("🌐 Live Google Search Grounding", value=False)
         enable_tts = st.checkbox("Enable Voice Audio (TTS)", value=False)
         selected_theme = st.selectbox(
             "UI Accent Palette:",
@@ -249,6 +260,20 @@ with st.sidebar:
         if selected_theme != st.session_state.active_theme:
             st.session_state.active_theme = selected_theme
             st.rerun()
+
+    # Chat Export Tool
+    active_msgs = st.session_state.sessions.get(st.session_state.current_session, [])
+    if len(active_msgs) > 1:
+        md_export = f"# Nexus AI Studio - Conversation Export\n**Session:** {st.session_state.current_session}\n\n---\n"
+        for m in active_msgs:
+            md_export += f"### {m['role'].capitalize()}\n{m['content']}\n\n"
+        st.download_button(
+            label="📥 Export Chat (.md)",
+            data=md_export,
+            file_name=f"{st.session_state.current_session.replace(' ', '_')}.md",
+            mime="text/markdown",
+            use_container_width=True
+        )
 
     st.markdown("---")
 
@@ -357,7 +382,7 @@ if app_mode == "📄 Document Q&A (RAG)":
                             continue
 
 else:
-    # Chat Assistant (Instant Token Streaming)
+    # Chat Assistant (Multi-Turn Context, Persona Support, & Search Grounding)
     active_msgs = st.session_state.sessions.get(st.session_state.current_session, [])
     
     for idx, msg in enumerate(active_msgs):
@@ -399,11 +424,33 @@ else:
                 full_res = ""
                 success = False
 
+                # 1. Format previous chat history for Claude/ChatGPT style multi-turn context
+                formatted_contents = []
+                for m in active_msgs:
+                    role_tag = "user" if m["role"] == "user" else "model"
+                    formatted_contents.append(
+                        types.Content(
+                            role=role_tag,
+                            parts=[types.Part.from_text(text=m["content"])]
+                        )
+                    )
+
+                # 2. Build configuration with persona system instructions & optional Google Search
+                config_params = {
+                    "system_instruction": PERSONAS.get(selected_persona, PERSONAS["General Assistant"])
+                }
+                if enable_search:
+                    config_params["tools"] = [{"google_search": {}}]
+
+                gen_config = types.GenerateContentConfig(**config_params)
+
+                # 3. Stream multi-turn response
                 for m in AVAILABLE_MODELS:
                     try:
                         response_stream = client.models.generate_content_stream(
                             model=m,
-                            contents=prompt,
+                            contents=formatted_contents,
+                            config=gen_config
                         )
                         for chunk in response_stream:
                             if chunk.text:
