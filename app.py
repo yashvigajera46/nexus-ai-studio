@@ -206,7 +206,7 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# 6. Sidebar
+# 6. Sidebar (Clean Navigation & Collapsed Settings)
 with st.sidebar:
     st.markdown("### ✨ **Nexus AI**")
 
@@ -248,35 +248,9 @@ with st.sidebar:
                 st.session_state.uploaded_file_name = uploaded_doc.name
                 st.success(f"Loaded: {uploaded_doc.name}")
 
-    with st.expander("⚙️ AI Persona & Tools"):
-        selected_persona = st.selectbox("AI Role / Persona:", list(PERSONAS.keys()), index=0)
-        enable_search = st.checkbox("🌐 Live Google Search Grounding", value=False)
-        enable_tts = st.checkbox("Enable Voice Audio (TTS)", value=False)
-        selected_theme = st.selectbox(
-            "UI Accent Palette:",
-            list(THEMES.keys()),
-            index=list(THEMES.keys()).index(st.session_state.active_theme)
-        )
-        if selected_theme != st.session_state.active_theme:
-            st.session_state.active_theme = selected_theme
-            st.rerun()
-
-    # Chat Export Tool
-    active_msgs = st.session_state.sessions.get(st.session_state.current_session, [])
-    if len(active_msgs) > 1:
-        md_export = f"# Nexus AI Studio - Conversation Export\n**Session:** {st.session_state.current_session}\n\n---\n"
-        for m in active_msgs:
-            md_export += f"### {m['role'].capitalize()}\n{m['content']}\n\n"
-        st.download_button(
-            label="📥 Export Chat (.md)",
-            data=md_export,
-            file_name=f"{st.session_state.current_session.replace(' ', '_')}.md",
-            mime="text/markdown",
-            use_container_width=True
-        )
-
     st.markdown("---")
 
+    # Search & Chat Sessions List
     search_query = st.text_input("🔍 Search chats...", placeholder="Type keywords...").lower()
 
     def render_chat_row(s_name, is_pinned=False):
@@ -338,6 +312,35 @@ with st.sidebar:
         st.markdown("#### 🕒 **Recents**")
         for s_name in recents_visible:
             render_chat_row(s_name, is_pinned=False)
+
+    st.markdown("---")
+
+    # Bottom Collapsed Settings & Export
+    with st.expander("⚙️ Settings & Tools", expanded=False):
+        selected_persona = st.selectbox("AI Role / Persona:", list(PERSONAS.keys()), index=0)
+        enable_search = st.checkbox("🌐 Live Google Search Grounding", value=False)
+        enable_tts = st.checkbox("Enable Voice Audio (TTS)", value=False)
+        selected_theme = st.selectbox(
+            "UI Accent Palette:",
+            list(THEMES.keys()),
+            index=list(THEMES.keys()).index(st.session_state.active_theme)
+        )
+        if selected_theme != st.session_state.active_theme:
+            st.session_state.active_theme = selected_theme
+            st.rerun()
+
+    active_msgs = st.session_state.sessions.get(st.session_state.current_session, [])
+    if len(active_msgs) > 1:
+        md_export = f"# Nexus AI Studio - Conversation Export\n**Session:** {st.session_state.current_session}\n\n---\n"
+        for m in active_msgs:
+            md_export += f"### {m['role'].capitalize()}\n{m['content']}\n\n"
+        st.download_button(
+            label="📥 Export Chat (.md)",
+            data=md_export,
+            file_name=f"{st.session_state.current_session.replace(' ', '_')}.md",
+            mime="text/markdown",
+            use_container_width=True
+        )
 
 # Header
 st.markdown("<div class='hero-title'>Nexus AI Studio ✨</div>", unsafe_allow_html=True)
@@ -424,7 +427,7 @@ else:
                 full_res = ""
                 success = False
 
-                # 1. Format previous chat history for Claude/ChatGPT style multi-turn context
+                # Format conversation history for full multi-turn context
                 formatted_contents = []
                 for m in active_msgs:
                     role_tag = "user" if m["role"] == "user" else "model"
@@ -435,7 +438,6 @@ else:
                         )
                     )
 
-                # 2. Build configuration with persona system instructions & optional Google Search
                 config_params = {
                     "system_instruction": PERSONAS.get(selected_persona, PERSONAS["General Assistant"])
                 }
@@ -444,7 +446,6 @@ else:
 
                 gen_config = types.GenerateContentConfig(**config_params)
 
-                # 3. Stream multi-turn response
                 for m in AVAILABLE_MODELS:
                     try:
                         response_stream = client.models.generate_content_stream(
